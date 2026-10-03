@@ -27,7 +27,21 @@
 
 import pandas as pd
 import asyncio
+from contextlib import asynccontextmanager
 from ib_client import *
+
+# 📌 統一連線設定：同一台機器同時跑多個腳本時，請改用不同的 CLIENT_ID，避免 IB 踢掉重複 session
+CLIENT_ID = 200
+
+
+@asynccontextmanager
+async def get_client(ib=None):
+    """有傳入已連線的 ib 就直接共用（結束時不斷線）；否則自建一條連線（用完自動斷線）"""
+    if ib is not None:
+        yield ib
+        return
+    async with IBClient(host='127.0.0.1', port=4001, client_id=CLIENT_ID) as c:
+        yield c
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
@@ -40,14 +54,13 @@ class TickList:
         self.df = None
 
     def update(self, df_incoming):
+        # 保留 'time' 為普通欄位（不 set_index），concat 時不需對齊 index，速度更快
         if self.df is None:
             self.df = df_incoming.copy()
-            self.df.set_index('time', inplace=True)
         else:
-            df_incoming_indexed = df_incoming.set_index('time')
-            self.df = pd.concat([self.df, df_incoming_indexed])
-            if len(self.df) > self.max_ticks:
-                self.df = self.df.iloc[-self.max_ticks:]
+            self.df = pd.concat([self.df, df_incoming], ignore_index=True)
+        if len(self.df) > self.max_ticks:
+            self.df = self.df.iloc[-self.max_ticks:]
         return self.df
 
 
@@ -59,22 +72,25 @@ class KlineChart:
         self.df = None
 
     def update(self, df_incoming):
-        """傳入新 Bar，自動完成合併、去重、限長，並回傳最完整的 K 線圖"""
+        """傳入新 Bar，自動完成合併、去重（新數據覆蓋舊）、限長，並回傳最完整的 K 線圖"""
         if self.df is None:
             self.df = df_incoming.copy()
-        else:
-            self.df = pd.concat([self.df, df_incoming])
-            self.df = self.df[~self.df.index.duplicated(keep='last')]
-            self.df.sort_index(inplace=True)
-            if len(self.df) > self.max_bars:
-                self.df = self.df.iloc[-self.max_bars:]
+            return self.df
+        # 只從舊框移除重複的 bar 再 concat，避免每次對整張表跑 duplicated()
+        overlap_mask = self.df.index.isin(df_incoming.index)
+        if overlap_mask.any():
+            self.df = self.df[~overlap_mask]
+        self.df = pd.concat([self.df, df_incoming])
+        self.df.sort_index(inplace=True)
+        if len(self.df) > self.max_bars:
+            self.df = self.df.iloc[-self.max_bars:]
         return self.df
 
 
-async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day'):
+async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', ib=None):
 
-    # 🔥 使用 async with 呼叫我們改寫好的 IBClient
-    async with IBClient(host='127.0.0.1', port=4001, client_id=200) as client:
+    # 🔥 使用 async with 呼叫我們改寫好的 IBClient（傳入已連線的 ib 則直接共用）
+    async with get_client(ib) as client:
         print("====== 成功透過 ib_async 入口連線 ======")
         # 💡 呼叫範例 1：拉取股票 (STK) 的 5 分鐘 K 線
         stock = await client.get_kline(symbol=symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting)
@@ -86,11 +102,11 @@ async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 
             print(f"❌ 獲取失敗！原因: {stock['message']}")
 
 
-async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day'):
+async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', ib=None):
 
-    # 🔥 使用 async with 呼叫我們改寫好的 IBClient
-    async with IBClient(host='127.0.0.1', port=4001, client_id=200) as ib:
-        stream = ib.get_kline_live(symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting,
+    # 🔥 使用 async with 呼叫我們改寫好的 IBClient（傳入已連線的 ib 則直接共用）
+    async with get_client(ib) as client:
+        stream = client.get_kline_live(symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting,
                                           only_new_bar=True)
 
         chart = KlineChart(max_bars=500)
@@ -113,14 +129,17 @@ async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSettin
                 print(df)'''
 
 
-async def run_ticks_monitoring(*, security_type, symbol, max_records=20):
-    async with IBClient(host='127.0.0.1', port=4001, client_id=200) as ib:
+async def run_ticks_monitoring(*, security_type, symbol, max_records=20, ib=None):
+    async with get_client(ib) as client:
         # 呼叫 Class 內剛剛寫好的逐筆成交方法
-        stream = ib.get_ticks_live(symbol, security_type=security_type)
+        stream = client.get_ticks_live(symbol, security_type=security_type)
 
         tick_table = TickList(max_ticks=max_records)
 
         async for df_incoming in stream:
+            if isinstance(df_incoming, dict) and 'error' in df_incoming:
+                print(f"\n❌ [Time & Sales - {symbol}] 訂閱被 IB 拒絕：{df_incoming['error']}")
+                break
             # 外部一行代碼完成明細拼接
             full_tick_df = tick_table.update(df_incoming)
 
@@ -144,12 +163,15 @@ class OrderBook:
 
 
 # 📌 外層封裝函數：無 self，使用 *, 強制關鍵字參數，位置完全自由對調
-async def run_order_flow_monitoring(*, security_type, symbol, rows=5):
-    async with IBClient(host='127.0.0.1', port=4001, client_id=200) as ib:
-        stream = ib.get_depth_live(symbol, security_type=security_type, num_rows=rows)
+async def run_order_flow_monitoring(*, security_type, symbol, rows=5, ib=None):
+    async with get_client(ib) as client:
+        stream = client.get_depth_live(symbol, security_type=security_type, num_rows=rows)
         book_tool = OrderBook()
 
         async for depth_data in stream:
+            if isinstance(depth_data, dict) and 'error' in depth_data:
+                print(f"\n❌ [Order Flow - {symbol}] 訂閱被 IB 拒絕：{depth_data['error']}")
+                break
             # 實時更新五檔
             current_book = book_tool.update(depth_data)
 
@@ -159,6 +181,13 @@ async def run_order_flow_monitoring(*, security_type, symbol, rows=5):
             print(f"=============================================")
             print(current_book)
             print(f"=============================================")
+
+
+# 🔥 新增：單一連線同時監控多個符號（避免每符號一條連線造成 clientId 衝突）
+async def run_multi_monitor(*, monitors):
+    """monitors: list of (function, kwargs_dict)，全部共用同一條連線並行執行"""
+    async with IBClient(host='127.0.0.1', port=4001, client_id=CLIENT_ID) as ib:
+        await asyncio.gather(*(fn(ib=ib, **kw) for fn, kw in monitors))
 
 
 # 啟動非同步主程式（相容 Python 3.12+ 的標準寫法）
@@ -172,7 +201,13 @@ if __name__ == '__main__':
 
     #asyncio.run(run_order_flow_monitoring(security_type='CRYPTO', symbol='BTC', rows=5))
     #asyncio.run(run_order_flow_monitoring(security_type='STK', symbol='NVDA', rows=5))
-    asyncio.run(run_order_flow_monitoring(security_type='FUT', symbol='MNQ', rows=5))
+    #asyncio.run(run_order_flow_monitoring(security_type='FUT', symbol='MNQ', rows=5))
+
+    # 🔥 單一連線同時監控多個符號（並行、無 clientId 衝突）
+    #asyncio.run(run_multi_monitor(monitors=[
+    #    (run_ticks_monitoring, dict(security_type='CASH', symbol='USDJPY')),
+    #    (get_kline_live, dict(security_type='FUT', symbol='MNQ', durationStr='1 D', barSizeSetting='15 mins')),
+    #]))
 
     #asyncio.run(get_kline_live(symbol='USDJPY', security_type='CASH', durationStr='1 D', barSizeSetting='15 mins'))
     #asyncio.run(get_kline_live(symbol='MNQ', security_type='FUT', durationStr='1 D', barSizeSetting='15 mins'))
