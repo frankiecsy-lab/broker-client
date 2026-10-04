@@ -10,7 +10,7 @@ from ib_client import IBClient
 
 pd.set_option('display.width', None)
 pd.set_option('display.max_colwidth', None)
-
+pd.set_option('display.max_rows', None)
 class BrokerClient(ABC):
     def __init__(self):
         self.config = self._get_config()

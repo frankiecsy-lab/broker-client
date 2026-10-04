@@ -32,6 +32,7 @@ class IBClient():
 
     def _normalize_kline(self,data,ktype):
         data = data.rename(columns={'date': 'time_key'})
+        data['time_key'] = data['time_key'].dt.tz_localize(None)
         columns_to_drop = ['average', 'name', 'turnover', 'barCount']
         data =  data.drop(columns=columns_to_drop, errors='ignore')
         data['volume'] = data['volume'].astype(int)

@@ -66,7 +66,7 @@ class FutuClient():
                                                    session=Session.ALL)
         # 先订阅 K 线类型。订阅成功后 OpenD 将持续收到服务器的推送，False 代表暂时不需要推送给脚本
         if ret_sub == RET_OK:  # 订阅成功
-            ret, data = self.quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.QFQ)  # 获取美股AAPL最近2个 K 线数据
+            ret, data = self.quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)  # 获取美股AAPL最近2个 K 线数据
             if ret == RET_OK:
                 status=True
             else:
