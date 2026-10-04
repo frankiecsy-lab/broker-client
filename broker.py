@@ -15,7 +15,7 @@ class BrokerClient(ABC):
     def __init__(self):
         self.config = self._get_config()
         self.ib_client = IBClient(config=self.config.get("ib", {}))
-        self.futu_client = FutuClient(config=self.config.get("get", {}))
+        self.futu_client = FutuClient(config=self.config.get("futu", {}))
 
     async def __aenter__(self):
         print("BrokerClient Started")
@@ -81,7 +81,7 @@ async def main():
         #stream_kline
         async for json_result in client.stream_kline(code=code, ktype=ktype):
             print("\n📦 【策略層收到最新 JSON 數據】:")
-            print(json.dumps(json_result, indent=2, ensure_ascii=False))
+            print(json.dumps(json_result, indent=2, ensure_ascii=False, default=str))
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
 if __name__ == "__main__":

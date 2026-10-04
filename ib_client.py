@@ -26,18 +26,20 @@ class IBClient():
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.ib:
+        if getattr(self, 'ib', None) is not None:
             self.ib.disconnect()
         return False
 
     def _parse_code(self,code):
+        if "." not in code:
+            raise ValueError(f"Invalid code format (expected 'MARKET.SYMBOL'): {code}")
         market, symbol = code.split(".", 1)
         market = market.strip().upper()
         symbol = symbol.strip()
         currency = self.currency_map.get(market, "USD")
         exchange = self.exchange_map.get(market, "US")
 
-        if market == "HK":
+        if market == "HK" and symbol.isdigit():
             symbol = str(int(symbol))
 
         return market, symbol,exchange,currency
@@ -110,12 +112,15 @@ class IBClient():
         # 定義商品：Apple 股票
         contract = Stock(symbol, exchange, currency)
 
+        # 🤖 根據動態週期自動配對最安全的時間長度（同 stream_kline 一樣）
+        bar_size, duration = self.ktype_map.get(ktype, ('1 day', '2 D'))
+
         # 尋找 K 線數據
         bars = await self.ib.reqHistoricalDataAsync(
             contract,
             endDateTime='',
-            durationStr='2 D',
-            barSizeSetting='1 day',
+            durationStr=duration,
+            barSizeSetting=bar_size,
             whatToShow='TRADES',
             useRTH=True
         )

@@ -13,7 +13,7 @@ class MyCurKlineHandler(CurKlineHandlerBase):
         ret_code, content = super(MyCurKlineHandler, self).on_recv_rsp(rsp_pb)
         if ret_code == RET_OK:
             # 1. 轉成你要求的統一格式 ( status, data, message )
-            #latest_bar = content.tail(1)
+            latest_bar = content.tail(1)
 
             json_result = {
                 "status": True,
