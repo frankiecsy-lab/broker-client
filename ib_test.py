@@ -87,13 +87,13 @@ class KlineChart:
         return self.df
 
 
-async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', ib=None):
+async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', currency='USD', ib=None):
 
     # 🔥 使用 async with 呼叫我們改寫好的 IBClient（傳入已連線的 ib 則直接共用）
     async with get_client(ib) as client:
         print("====== 成功透過 ib_async 入口連線 ======")
         # 💡 呼叫範例 1：拉取股票 (STK) 的 5 分鐘 K 線
-        stock = await client.get_kline(symbol=symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting)
+        stock = await client.get_kline(symbol=symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting, currency=currency)
         if stock['status'] == 'OK':
             data = stock['data']
             print(f"✅ 成功獲取 DataFrame (筆數: {len(data)}):\n")
@@ -102,12 +102,12 @@ async def get_kline(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 
             print(f"❌ 獲取失敗！原因: {stock['message']}")
 
 
-async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', ib=None):
+async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSetting='1 day', currency='USD', ib=None):
 
     # 🔥 使用 async with 呼叫我們改寫好的 IBClient（傳入已連線的 ib 則直接共用）
     async with get_client(ib) as client:
         stream = client.get_kline_live(symbol, security_type=security_type, durationStr=durationStr, barSizeSetting=barSizeSetting,
-                                          only_new_bar=True)
+                                          currency=currency, only_new_bar=True)
 
         chart = KlineChart(max_bars=500)
 
@@ -129,10 +129,10 @@ async def get_kline_live(*,security_type, symbol,durationStr='1 M',barSizeSettin
                 print(df)'''
 
 
-async def run_ticks_monitoring(*, security_type, symbol, max_records=20, ib=None):
+async def run_ticks_monitoring(*, security_type, symbol, max_records=20, currency='USD', ib=None):
     async with get_client(ib) as client:
         # 呼叫 Class 內剛剛寫好的逐筆成交方法
-        stream = client.get_ticks_live(symbol, security_type=security_type)
+        stream = client.get_ticks_live(symbol, security_type=security_type, currency=currency)
 
         tick_table = TickList(max_ticks=max_records)
 
@@ -163,9 +163,9 @@ class OrderBook:
 
 
 # 📌 外層封裝函數：無 self，使用 *, 強制關鍵字參數，位置完全自由對調
-async def run_order_flow_monitoring(*, security_type, symbol, rows=5, ib=None):
+async def run_order_flow_monitoring(*, security_type, symbol, rows=5, currency='USD', ib=None):
     async with get_client(ib) as client:
-        stream = client.get_depth_live(symbol, security_type=security_type, num_rows=rows)
+        stream = client.get_depth_live(symbol, security_type=security_type, num_rows=rows, currency=currency)
         book_tool = OrderBook()
 
         async for depth_data in stream:
@@ -192,6 +192,8 @@ async def run_multi_monitor(*, monitors):
 
 # 啟動非同步主程式（相容 Python 3.12+ 的標準寫法）
 if __name__ == '__main__':
+    pass  # 📌 取消註解下方任一範例來執行（或改用 ib_gui_test.py GUI）
+
     #has permission
     #asyncio.run(get_kline(symbol='MNQ', security_type='FUT',durationStr='1 D',barSizeSetting='15 mins'))
     #asyncio.run(get_kline(symbol='NVDA', security_type='STK',durationStr='1 D',barSizeSetting='15 mins'))

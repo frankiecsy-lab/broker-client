@@ -325,9 +325,17 @@ class IBClient:
 
         sub_idx = self._register_subscription(resub, error_queues=(queue,))
 
+        def _to_kline_df(df):
+            """util.df 輸出 → 以 'date' 為 index 的 K線 DataFrame，並統一轉成 DatetimeIndex。
+            📌 IB 對日/週/月 bar 只回 YYYYMMDD（無時間），ib_async parseIBDatetime 會解析成
+               datetime.date —— 不正規化的話下游 ts.to_pydatetime() 會崩潰、且 date/datetime
+               混在同一 index 裡比較會 TypeError。"""
+            df.set_index('date', inplace=True)
+            df.index = pd.to_datetime(df.index)
+            return df
+
         # 1. 首先把初次取回的歷史數據轉成 DataFrame 先 yield 出去
-        df_init = util.df(state['bars'])
-        df_init.set_index('date', inplace=True)
+        df_init = _to_kline_df(util.df(state['bars']))
         print(f"✅ 歷史數據載入完成，共 {len(df_init)} 筆。開始監聽後續即時更新...")
         yield df_init
 
@@ -336,8 +344,7 @@ class IBClient:
             # 不斷等待事件把最新 Bar 塞進 Queue，並即時 Yield 吐出
             while True:
                 df_bar = await queue.get()
-                df_bar.set_index('date', inplace=True)
-                yield df_bar
+                yield _to_kline_df(df_bar)
                 queue.task_done()
         except asyncio.CancelledError:
             # 🟢 智慧捕捉：完美攔截 K 線串流的中斷訊號，防止長串 Traceback 往外噴
