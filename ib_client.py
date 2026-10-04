@@ -13,22 +13,47 @@ class IBClient():
         self.currency_map={ 'US':'USD', 'HK':'HKD' }
         self.exchange_map = {'US': 'SMART', 'HK': 'SEHK'}
         self.ktype_map = {
-            'K_1M':   ('1 min',   '1 D'),   # 1分鐘K：只保留過去 1 天（大約 390 根，最輕量）
-            'K_5M':   ('5 mins',  '2 D'),   # 5分鐘K：保留過去 2 天（大約 156 根）
-            'K_15M':  ('15 mins', '5 D'),   # 15分鐘K：保留過去 5 天
-            'K_60M':  ('1 hour',  '1 M'),   # 1小時K：保留過去 1 個月
-            'K_DAY':  ('1 day',   '3 M'),   # 日K：保留過去 3 個月（大約 60 根，方便計算均線）
-            'K_WEEK': ('1 week',  '1 Y'),   # 週K：保留過去 1 年
+            # 🤖 只用作 bar size；duration 改由 _calc_duration() 按 kline_num 動態計算（get/stream 共用）
+            'K_1M':   ('1 min',   None),
+            'K_5M':   ('5 mins',  None),
+            'K_15M':  ('15 mins', None),
+            'K_60M':  ('1 hour',  None),
+            'K_DAY':  ('1 day',   None),
+            'K_WEEK': ('1 week',  None),
         }
+        # 🤖 共享持久連線狀態：8 條 stream 共用同一條 IB 連線（IB 禁止同一 clientId 開多條）
+        self.ib = None
+        self._connected = False
+        self._connect_lock = asyncio.Lock()
+
+    async def _ensure_connected(self):
+        """確保共享連線已建立；可並發呼叫（冪等），唔會重複 connect。"""
+        async with self._connect_lock:
+            if self._connected and self.ib is not None:
+                return
+            ib = IB()
+            await ib.connectAsync(self.host, self.port, clientId=99)
+            self.ib = ib
+            self._connected = True
+
+    async def disconnect(self):
+        """斷開共享連線（由 BrokerClient.__aexit__ 統一呼叫）。"""
+        async with self._connect_lock:
+            if getattr(self, 'ib', None) is not None:
+                try:
+                    self.ib.disconnect()
+                except Exception:
+                    pass
+            self.ib = None
+            self._connected = False
 
     async def __aenter__(self):
-        self.ib=IB()
-        await self.ib.connectAsync(self.host, self.port, clientId=99)
+        # 共享連線：只確保已連接；離開 context 唔會斷線（8 條 stream 共用同一條）
+        await self._ensure_connected()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if getattr(self, 'ib', None) is not None:
-            self.ib.disconnect()
+        # 🤖 故意唔斷線：連線係共享嘅，由 BrokerClient.__aexit__ 統一清理
         return False
 
     def _normalize_kline(self,data,ktype):
@@ -58,7 +83,32 @@ class IBClient():
 
         return market, symbol,exchange,currency
 
+    def _calc_duration(self, ktype, kline_num):
+        # 🤖 根據 K 線週期 + 根數計算最安全嘅歷史窗口（get_kline / stream_kline 共用）
+        if ktype == 'K_1M':
+            days = (kline_num // 390) + 1   # 一天約 390 根
+            return f"{days} D"
+        elif ktype == 'K_5M':
+            days = (kline_num // 78) + 1    # 一天約 78 根
+            return f"{days} D"
+        elif ktype == 'K_15M':
+            days = (kline_num // 26) + 1    # 一天約 26 根
+            return f"{days} D"
+        elif ktype == 'K_60M':
+            days = int(kline_num / 6.5) + 2  # 一天約 6.5 根
+            return f"{days} D"
+        elif ktype == 'K_DAY':
+            months = (kline_num // 20) + 1   # 一個月約 20 個交易日
+            return f"{months} M"
+        elif ktype == 'K_WEEK':
+            years = (kline_num // 52) + 1    # 一年 52 週
+            return f"{years} Y"
+        else:
+            return '2 D'
+
     async def stream_kline(self, code, ktype, kline_num=100):
+        # 0️⃣ 確保共享連線已建立（冪等，8 條 stream 共用同一條）
+        await self._ensure_connected()
         # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）
         status, data, _ = await self.get_kline(code, ktype, kline_num=kline_num)
         if not status or data is None:
@@ -72,18 +122,23 @@ class IBClient():
         market, symbol, exchange, currency = self._parse_code(code)
         contract = Stock(symbol, exchange, currency)
 
-        # 🤖 根據動態週期自動配對最安全的時間長度
-        bar_size, duration = self.ktype_map.get(ktype, ('1 day', '2 D'))
+        # 🤖 同 get_kline 用同一個動態窗口，確保歷史底表同 live 訂閱範圍一致
+        bar_size, _ = self.ktype_map.get(ktype, ('1 day', None))
+        duration = self._calc_duration(ktype, kline_num)
 
-        bars = await self.ib.reqHistoricalDataAsync(
-            contract,
-            endDateTime='',
-            durationStr=duration,
-            barSizeSetting=bar_size,
-            whatToShow='TRADES',
-            useRTH=False,  # 週末除錯用 False
-            keepUpToDate=True
-        )
+        try:
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=False,  # 🤖 同 get_kline 保持一致（含盤前盤後）
+                keepUpToDate=True
+            )
+        except Exception as e:
+            print(f"❌ IB stream_kline: keepUpToDate 訂閱失敗 {e}")
+            return
 
         # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar
         kline_df = data.copy()
@@ -98,9 +153,14 @@ class IBClient():
             if latest_row.empty:
                 return
             tk = latest_row['time_key'].iloc[0]
-            if not kline_df.empty and kline_df['time_key'].iloc[-1] == tk:
-                # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
-                kline_df.iloc[-1] = latest_row.iloc[0]
+            if not kline_df.empty:
+                last_tk = kline_df['time_key'].iloc[-1]
+                if tk < last_tk:
+                    # 🤖 比最後一行舊（例如初始批次補發）：忽略，避免亂序拼接
+                    return
+                elif tk == last_tk:
+                    # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
+                    kline_df.iloc[-1] = latest_row.iloc[0]
             else:
                 # 新 bar：接到尾端
                 kline_df = pd.concat([kline_df, latest_row], ignore_index=True)
@@ -122,11 +182,13 @@ class IBClient():
 
         except asyncio.CancelledError:
             print("🛑 [IB PUSH] 接收到終止指令，正在關閉監聽事件...")
+            raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
         finally:
             # 安全拔線
             bars.updateEvent -= on_bar_update
 
     async def get_kline(self,code,ktype,kline_num=100):
+        await self._ensure_connected()  # 🤖 確保共享連線已建立（冪等）
         print('IB get_kline')
         status=False
         data, message=None,None
@@ -135,48 +197,23 @@ class IBClient():
         # 定義商品：Apple 股票
         contract = Stock(symbol, exchange, currency)
 
-        # 🤖 根據動態週期自動配對最安全的時間長度（同 stream_kline 一樣）
-        bar_size, duration = self.ktype_map.get(ktype, ('1 day', '2 D'))
+        # 🤖 動態窗口（同 stream_kline 共用同一個 _calc_duration）
+        bar_size, _ = self.ktype_map.get(ktype, ('1 day', None))
+        duration = self._calc_duration(ktype, kline_num)
 
-        if ktype == 'K_1M':
-            # 1分鐘K：一天 390 根。若大於 390 根需要 2天，否則 1天 就夠
-            days = (kline_num // 390) + 1
-            duration = f"{days} D"
-        elif ktype == 'K_5M':
-            # 5分鐘K：一天 78 根。
-            days = (kline_num // 78) + 1
-            duration = f"{days} D"
-        elif ktype == 'K_15M':
-            # 15分鐘K：一天 26 根。
-            days = (kline_num // 26) + 1
-            duration = f"{days} D"
-        elif ktype == 'K_60M':
-            # 60分鐘K（1小時）：一天 6.5 根。
-            days = int(kline_num / 6.5) + 2
-            duration = f"{days} D"
-        elif ktype == 'K_DAY':
-            # 日K：1 根就是 1 天。直接加上安全墊（考慮週末）乘以 1.5 倍天數，或者轉成月份
-            # 200 根日 K 大約需要 10 個月 (10 M) 的歷史窗口
-            months = (kline_num // 20) + 1  # 一個月大約 20 個交易日
-            duration = f"{months} M"
-        elif ktype == 'K_WEEK':
-            # 週K：1 根是一週。200 根週 K 大約需要 4 年 (4 Y)
-            years = (kline_num // 52) + 1
-            duration = f"{years} Y"
-        else:
-            duration = '2 D'
-
-        # 尋找 K 線數據
-        bars = await self.ib.reqHistoricalDataAsync(
-            contract,
-            endDateTime='',
-            durationStr=duration,
-            barSizeSetting=bar_size,
-            whatToShow='TRADES',
-            useRTH=True
-        )
-
-        data = util.df(bars).tail(kline_num).reset_index(drop=True)
+        try:
+            # 尋找 K 線數據
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=False  # 🤖 同 stream_kline 保持一致（含盤前盤後）
+            )
+            data = util.df(bars).tail(kline_num).reset_index(drop=True)
+        except Exception as e:
+            return False, None, str(e)
 
         status=True
         data = self._normalize_kline(data, ktype)

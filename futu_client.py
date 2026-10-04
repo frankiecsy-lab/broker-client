@@ -30,12 +30,16 @@ class FutuClient():
         pass
 
     async def __aenter__(self):
-        self.quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
+        # 🤖 共享 context 已廢：而家每條 stream / 每次 get_kline 用獨立連線（見 _new_ctx）
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self.quote_ctx.close()
         return False
+
+    def _new_ctx(self):
+        # 🤖 每條 stream / 每次 get_kline 開一條獨立 OpenQuoteContext
+        # （OpenD 支援多條並發連線；每個 context 有自己 handler，8 條互不干擾）
+        return OpenQuoteContext(host=self.host, port=self.port)
 
     def _normalize_kline(self,data,ktype):
         columns_to_drop = ['code', 'name', 'turnover', 'pe_ratio', 'turnover_rate', 'last_close']
@@ -54,48 +58,53 @@ class FutuClient():
         print('FUTU get_kline')
         status=False
         data, message=None,None
-        ret_sub, err_message = self.quote_ctx.subscribe([code], [ktype], subscribe_push=False,
-                                                   session=Session.ALL)
-        # 先订阅 K 线类型。订阅成功后 OpenD 将持续收到服务器的推送，False 代表暂时不需要推送给脚本
-        if ret_sub == RET_OK:  # 订阅成功
-            ret, data = self.quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)  # 获取美股AAPL最近2个 K 线数据
-            if ret == RET_OK:
-                status=True
+        quote_ctx = self._new_ctx()  # 🤖 獨立連線，用完即斷
+        try:
+            ret_sub, err_message = quote_ctx.subscribe([code], [ktype], subscribe_push=False,
+                                                       session=Session.ALL)
+            if ret_sub == RET_OK:  # 订阅成功
+                ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)
+                if ret == RET_OK:
+                    status=True
+                else:
+                    status=False
+                    message=data
             else:
                 status=False
-                message=data
-        else:
-            status=False
-            message=err_message
+                message=err_message
+        finally:
+            quote_ctx.close()
 
         data = self._normalize_kline(data,ktype) if status else None
 
         return status, data, message
 
     async def stream_kline(self, code, ktype, kline_num=10):
-        # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）
-        status, data, _ = await self.get_kline(code, ktype, kline_num=kline_num)
-        if not status or data is None:
-            print("❌ FUTU stream_kline: 歷史 K 線取得失敗")
-            return
-        print("FUTU stream_kline...")
-
-        # 2️⃣ 先 yield 一次完整歷史快照
-        yield data
-
-        # 3️⃣ 訂閱推送更新
-        ret_sub, err_msg = self.quote_ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
-        if ret_sub != RET_OK:
-            print(f"❌ FUTU stream_kline: 訂閱失敗 {err_msg}")
-            return
-
-        handler = MyCurKlineHandler()
-        self.quote_ctx.set_handler(handler)
-
-        # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar（同 IB 端同一份 contract）
-        kline_df = data.copy()
-
+        # 🤖 獨立 OpenQuoteContext：呢條 stream 專用，唔會同其他 stream 撞 handler / 連線
+        quote_ctx = self._new_ctx()
         try:
+            # 1️⃣ 先掛 handler 再訂閱 push — subscribe 之後每一筆推送都有人收，唔會漏 tick
+            handler = MyCurKlineHandler()
+            quote_ctx.set_handler(handler)
+
+            ret_sub, err_msg = quote_ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
+            if ret_sub != RET_OK:
+                print(f"❌ FUTU stream_kline: 訂閱失敗 {err_msg}")
+                return
+            # 2️⃣ 取歷史 K 線做初始底表（HISTORY）
+            ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)
+            if ret != RET_OK:
+                print("❌ FUTU stream_kline: 歷史 K 線取得失敗")
+                return
+            history_df = self._normalize_kline(data, ktype)
+
+            print("FUTU stream_kline...")
+            # 3️⃣ 先 yield 一次完整歷史快照
+            yield history_df
+
+            # 🤖 累積器：以歷史做底，之後逐條拼接新 bar（同 IB 端同一份 contract）
+            kline_df = history_df.copy()
+
             # 🔄 進入長線鎖定迴圈
             while True:
                 # 🤖 關鍵檢查：如果發現富途 Handler 的緩存區有新的 PUSH 資料
@@ -103,9 +112,14 @@ class FutuClient():
                     latest_bar = handler.data_buffer.pop(0)
                     norm_row = self._normalize_kline(latest_bar.copy(), ktype)
                     tk = norm_row['time_key'].iloc[0]
-                    if not kline_df.empty and kline_df['time_key'].iloc[-1] == tk:
-                        # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
-                        kline_df.iloc[-1] = norm_row.iloc[0]
+                    if not kline_df.empty:
+                        last_tk = kline_df['time_key'].iloc[-1]
+                        if tk < last_tk:
+                            # 🤖 比最後一行舊：忽略，避免亂序拼接
+                            continue
+                        elif tk == last_tk:
+                            # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
+                            kline_df.iloc[-1] = norm_row.iloc[0]
                     else:
                         # 新 bar：接到尾端
                         kline_df = pd.concat([kline_df, norm_row], ignore_index=True)
@@ -117,8 +131,14 @@ class FutuClient():
 
         except asyncio.CancelledError:
             print("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
+            raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
         finally:
-            self.quote_ctx.set_handler(None)
+            # 🤖 安全拔線：清 handler + 斷呢條 stream 專用連線
+            try:
+                quote_ctx.set_handler(None)
+            except Exception:
+                pass
+            quote_ctx.close()
 
     async def get_ticker(self):
         print('Futu get_ticker (來自獨立的 Futu 引擎)')

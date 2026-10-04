@@ -21,9 +21,13 @@ class BrokerClient(ABC):
         #print("BrokerClient Started")
         return self
 
-    # 2. 離開時：只 PRINT 結束
+    # 2. 離開時：統一清理共享連線
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        #print("BrokerClient Exited  ")
+        # 🤖 IB 係共享持久連線，要喺呢度斷；Futu 每次獨立連線已喺各 stream 內自行 close
+        try:
+            await self.ib_client.disconnect()
+        except Exception:
+            pass
         return False  # 若內部噴錯，讓異常正常拋出
 
     def _get_config(self, file='config.json'):
@@ -41,7 +45,7 @@ class BrokerClient(ABC):
     async def get_kline(self,code,ktype,broker=None):
 
         source = self.config.get("source", {}).get("get_kline", "ib")
-        kline_num=self.config.get("kline_num", {})
+        kline_num=self.config.get("kline_num", 100)  # 🤖 同 stream_kline 一致；config 冇填時用 100
         if broker is not None:
             source = broker.lower()
 
@@ -57,8 +61,10 @@ class BrokerClient(ABC):
                 raise ValueError(f"❌ 錯誤：不支援的券商類型 [{source}]")
 
 
-    async def stream_kline(self, code, ktype):
+    async def stream_kline(self, code, ktype, broker=None):
         source = self.config.get("source", {}).get("stream_kline", "ib")
+        if broker is not None:
+            source = broker.lower()  # 🤖 同 get_kline 一樣：傳入 broker 可 override config
         kline_num = self.config.get("kline_num", 100)
         match source:
             case "ib":
@@ -98,7 +104,7 @@ async def main():
         print(data)'''
 
         #stream_kline
-        async for kline in client.stream_kline(code=code, ktype=ktype):
+        async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu'):
             print(kline)
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
