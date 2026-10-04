@@ -1,0 +1,15 @@
+{
+    "source": {
+        "get_kline": "ib",
+        "stream_kline": "ib",
+        "get_ticker": "ib"
+    },
+    "futu": {
+        "host": "127.0.0.1",
+        "port": 11111
+    },
+    "ib": {
+        "host": "127.0.0.1",
+        "port": 4001
+    }
+}
