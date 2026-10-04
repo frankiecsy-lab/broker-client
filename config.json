@@ -1,8 +1,9 @@
 {
+    "kline_num": 100,
+    "kline_autype":"QFQ",
     "source": {
         "get_kline": "ib",
-        "stream_kline": "ib",
-        "get_ticker": "ib"
+        "stream_kline": "ib"
     },
     "futu": {
         "host": "127.0.0.1",

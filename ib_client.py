@@ -5,7 +5,7 @@ from ib_async import IB, Stock, util
 
 class IBClient():
     def __init__(self,config=None):
-        print(f'IB Config {config}')
+        #print(f'IB Config {config}')
         self.host = config.get("host", "127.0.0.1")
         self.port = config.get("port", 4001)
         self.symbol_map={ 'US':'USD', 'HK':'HKD' }
@@ -30,6 +30,18 @@ class IBClient():
             self.ib.disconnect()
         return False
 
+    def _normalize_kline(self,data,ktype):
+        data = data.rename(columns={'date': 'time_key'})
+        columns_to_drop = ['average', 'name', 'turnover', 'barCount']
+        data =  data.drop(columns=columns_to_drop, errors='ignore')
+        data['volume'] = data['volume'].astype(int)
+        for col in ['open', 'high', 'low', 'close']:
+            if col in data.columns:
+                data[col] = data[col].astype(float)
+        standard_order = ['time_key', 'open', 'high', 'low', 'close', 'volume']
+        data = data[standard_order]
+        return data
+
     def _parse_code(self,code):
         if "." not in code:
             raise ValueError(f"Invalid code format (expected 'MARKET.SYMBOL'): {code}")
@@ -46,7 +58,7 @@ class IBClient():
 
     async def stream_kline(self, code, ktype):
 
-        print(f"📡 [IB PUSH] 正在啟動 {code} 的即時 K 線 PUSH 監聽...")
+        print("IB stream_kline...")
         market, symbol, exchange, currency = self._parse_code(code)
         contract = Stock(symbol, exchange, currency)
 
@@ -105,15 +117,45 @@ class IBClient():
             # 安全拔線
             bars.updateEvent -= on_bar_update
 
-    async def get_kline(self,code,ktype):
-        #if self.ib.isConnected():
-        print("IB get_kline")
+    async def get_kline(self,code,ktype,kline_num=100):
+        print('IB get_kline')
+        status=False
+        data, message=None,None
+
         market, symbol, exchange,currency = self._parse_code(code)
         # 定義商品：Apple 股票
         contract = Stock(symbol, exchange, currency)
 
         # 🤖 根據動態週期自動配對最安全的時間長度（同 stream_kline 一樣）
         bar_size, duration = self.ktype_map.get(ktype, ('1 day', '2 D'))
+
+        if ktype == 'K_1M':
+            # 1分鐘K：一天 390 根。若大於 390 根需要 2天，否則 1天 就夠
+            days = (kline_num // 390) + 1
+            duration = f"{days} D"
+        elif ktype == 'K_5M':
+            # 5分鐘K：一天 78 根。
+            days = (kline_num // 78) + 1
+            duration = f"{days} D"
+        elif ktype == 'K_15M':
+            # 15分鐘K：一天 26 根。
+            days = (kline_num // 26) + 1
+            duration = f"{days} D"
+        elif ktype == 'K_60M':
+            # 60分鐘K（1小時）：一天 6.5 根。
+            days = int(kline_num / 6.5) + 2
+            duration = f"{days} D"
+        elif ktype == 'K_DAY':
+            # 日K：1 根就是 1 天。直接加上安全墊（考慮週末）乘以 1.5 倍天數，或者轉成月份
+            # 200 根日 K 大約需要 10 個月 (10 M) 的歷史窗口
+            months = (kline_num // 20) + 1  # 一個月大約 20 個交易日
+            duration = f"{months} M"
+        elif ktype == 'K_WEEK':
+            # 週K：1 根是一週。200 根週 K 大約需要 4 年 (4 Y)
+            years = (kline_num // 52) + 1
+            duration = f"{years} Y"
+        else:
+            duration = '2 D'
 
         # 尋找 K 線數據
         bars = await self.ib.reqHistoricalDataAsync(
@@ -125,10 +167,12 @@ class IBClient():
             useRTH=True
         )
 
-        # 轉成 Pandas DataFrame
-        df = util.df(bars)
-        print("\n📊 順利找到的 K 線數據如下：")
-        return df
+        data = util.df(bars).tail(kline_num).reset_index(drop=True)
+
+        status=True
+        data = self._normalize_kline(data, ktype)
+        return status, data, message
+
 
     async def get_ticker(self):
         print('Ib get_ticker (來自獨立的 IB 引擎)')
