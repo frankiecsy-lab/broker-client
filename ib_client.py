@@ -1,4 +1,5 @@
 import asyncio
+import pandas as pd
 from ib_async import IB, Stock, util
 
 
@@ -57,9 +58,17 @@ class IBClient():
 
         return market, symbol,exchange,currency
 
-    async def stream_kline(self, code, ktype):
-
+    async def stream_kline(self, code, ktype, kline_num=100):
+        # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）
+        status, data, _ = await self.get_kline(code, ktype, kline_num=kline_num)
+        if not status or data is None:
+            print("❌ IB stream_kline: 歷史 K 線取得失敗")
+            return
         print("IB stream_kline...")
+
+        # 2️⃣ 先 yield 一次完整歷史快照
+        yield data
+
         market, symbol, exchange, currency = self._parse_code(code)
         contract = Stock(symbol, exchange, currency)
 
@@ -76,27 +85,26 @@ class IBClient():
             keepUpToDate=True
         )
 
-        '''history_df = util.df(bars)
-        print("\n📜 === [IB 歷史快照] 剛啟動時載入的歷史 K 線數據 ===")
-        print(history_df)
-        print("==================================================\n")'''
+        # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar
+        kline_df = data.copy()
 
-        # 🤖 建立一個快取區（列表），用來存放剛推過來的 JSON 數據
+        # 🤖 快取區：記錄有幾多筆新推送等待送出
         data_buffer = []
 
-        # 🤖 定義回呼函式，每當 IB 有新價格 PUSH 來時，打包成統一格式塞入快取
+        # 🤖 定義回呼函式：IB 每 PUSH 一次就將最新 bar 拼入 K 線表，並標記待送
         def on_bar_update(bars_obj, has_new_bar):
-            latest_df = util.df(bars_obj)
-            latest_row = latest_df.tail(1)
-
-            # 打包成與富途完全一致的 統一格式
-            json_result = {
-                "status": True,
-                "data": latest_row.to_dict(orient='records'),
-                "message": "IB Stream Update"
-            }
-            # 塞入快取區
-            data_buffer.append(json_result)
+            nonlocal kline_df
+            latest_row = self._normalize_kline(util.df(bars_obj).tail(1), ktype)
+            if latest_row.empty:
+                return
+            tk = latest_row['time_key'].iloc[0]
+            if not kline_df.empty and kline_df['time_key'].iloc[-1] == tk:
+                # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
+                kline_df.iloc[-1] = latest_row.iloc[0]
+            else:
+                # 新 bar：接到尾端
+                kline_df = pd.concat([kline_df, latest_row], ignore_index=True)
+            data_buffer.append(True)
 
         # 掛載監聽事件
         bars.updateEvent += on_bar_update
@@ -104,10 +112,10 @@ class IBClient():
         try:
             # 🔄 進入長線鎖定迴圈
             while True:
-                # 🤖 如果快取區有資料，用 yield 不斷吐到最外層，且連線絕對不會斷！
+                # 🤖 有新推送就 yield 完整更新後嘅 K 線表到最外層，連線絕對不會斷！
                 if data_buffer:
-                    new_data = data_buffer.pop(0)
-                    yield new_data
+                    data_buffer.pop(0)
+                    yield kline_df.copy()
 
                 # 每 0.1 秒釋放一次控制權，維持背景監聽，不佔用 CPU 資源
                 await asyncio.sleep(0.1)

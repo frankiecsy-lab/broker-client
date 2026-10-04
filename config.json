@@ -1,8 +1,9 @@
 {
     "kline_num": 100,
+    "kline_adj": "none",
     "source": {
         "get_kline": "ib",
-        "stream_kline": "ib"
+        "stream_kline": "futu"
     },
     "futu": {
         "host": "127.0.0.1",

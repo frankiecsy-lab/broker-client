@@ -59,16 +59,17 @@ class BrokerClient(ABC):
 
     async def stream_kline(self, code, ktype):
         source = self.config.get("source", {}).get("stream_kline", "ib")
+        kline_num = self.config.get("kline_num", 100)
         match source:
             case "ib":
                 async with self.ib_client as ib:
                     # 🤖 IB 端未來也套用一模一樣的 async for ... yield 邏輯
-                    async for data in ib.stream_kline(code=code, ktype=ktype):
+                    async for data in ib.stream_kline(code=code, ktype=ktype, kline_num=kline_num):
                         yield data
             case 'futu':
                 async with self.futu_client as futu:
                     # 🤖 用 async for 接住子類別 yield 出來的水流，並再次 yield 吐給最外層 main
-                    async for data in futu.stream_kline(code=code, ktype=ktype):
+                    async for data in futu.stream_kline(code=code, ktype=ktype, kline_num=kline_num):
                         yield data
             case _:
                 # 🛡️ 防禦性設計：萬一有人在 config.json 亂填名字，給予安全警告並報錯
@@ -86,20 +87,19 @@ class BrokerClient(ABC):
 
 async def main():
     code='HK.00700'
-    ktype='K_60M'
+    ktype='K_1M'
     async with BrokerClient() as client:
         #client.get_config()
 
         #get_kline
-        status, data, message=await client.get_kline(code=code, ktype=ktype,broker='futu')
+        '''status, data, message=await client.get_kline(code=code, ktype=ktype,broker='futu')
         print(data)
         status, data, message=await client.get_kline(code=code, ktype=ktype,broker='ib')
-        print(data)
+        print(data)'''
 
         #stream_kline
-        '''async for json_result in client.stream_kline(code=code, ktype=ktype):
-            print("\n📦 【策略層收到最新 JSON 數據】:")
-            print(json.dumps(json_result, indent=2, ensure_ascii=False, default=str))'''
+        async for kline in client.stream_kline(code=code, ktype=ktype):
+            print(kline)
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
 if __name__ == "__main__":

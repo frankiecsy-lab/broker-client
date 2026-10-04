@@ -14,17 +14,9 @@ class MyCurKlineHandler(CurKlineHandlerBase):
 
     def on_recv_rsp(self, rsp_pb):
         ret_code, content = super(MyCurKlineHandler, self).on_recv_rsp(rsp_pb)
-        if ret_code == RET_OK:
-            # 1. 轉成你要求的統一格式 ( status, data, message )
-            latest_bar = content.tail(1)
-
-            json_result = {
-                "status": True,
-                "data": latest_bar.to_dict(orient='records'),
-                "message": "Futu Stream Update"
-            }
-            # 2. 塞進緩存區，等待外層的 stream_kline 把它撈走
-            self.data_buffer.append(json_result)
+        if ret_code == RET_OK and content is not None and not content.empty:
+            # 取最新 bar 塞進緩存區，等待外層 stream_kline 撈走拼接入 K 線表
+            self.data_buffer.append(content.tail(1))
 
         # 這裡的 return 是富途 SDK 內部的規定，我們保持原樣即可
         return ret_code, content
@@ -76,38 +68,51 @@ class FutuClient():
             status=False
             message=err_message
 
-        data = self._normalize_kline(data,ktype)
+        data = self._normalize_kline(data,ktype) if status else None
 
         return status, data, message
 
-    async def stream_kline(self, code, ktype):
-
+    async def stream_kline(self, code, ktype, kline_num=10):
+        # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）
+        status, data, _ = await self.get_kline(code, ktype, kline_num=kline_num)
+        if not status or data is None:
+            print("❌ FUTU stream_kline: 歷史 K 線取得失敗")
+            return
         print("FUTU stream_kline...")
 
-        status=False
-        data, message=None,None
-        # 1. 🔍 【歷史快照階段】：先一步到位，獲取當下的 K 線 DataFrame
+        # 2️⃣ 先 yield 一次完整歷史快照
+        yield data
+
+        # 3️⃣ 訂閱推送更新
         ret_sub, err_msg = self.quote_ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
         if ret_sub != RET_OK:
-            yield status, data, err_msg
+            print(f"❌ FUTU stream_kline: 訂閱失敗 {err_msg}")
             return
 
         handler = MyCurKlineHandler()
         self.quote_ctx.set_handler(handler)
+
+        # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar（同 IB 端同一份 contract）
+        kline_df = data.copy()
 
         try:
             # 🔄 進入長線鎖定迴圈
             while True:
                 # 🤖 關鍵檢查：如果發現富途 Handler 的緩存區有新的 PUSH 資料
                 if handler.data_buffer:
-                    # 把資料從緩存區拿出來
-                    data = handler.data_buffer.pop(0)
-                    # ✨ 核心魔法：用 yield 代替 return，把資料不斷吐向最外層，且絕對不斷線！
-                    status=True
-                    yield status, data, message
+                    latest_bar = handler.data_buffer.pop(0)
+                    norm_row = self._normalize_kline(latest_bar.copy(), ktype)
+                    tk = norm_row['time_key'].iloc[0]
+                    if not kline_df.empty and kline_df['time_key'].iloc[-1] == tk:
+                        # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
+                        kline_df.iloc[-1] = norm_row.iloc[0]
+                    else:
+                        # 新 bar：接到尾端
+                        kline_df = pd.concat([kline_df, norm_row], ignore_index=True)
+                    # ✨ yield 完整更新後嘅 K 線表到最外層，絕對不斷線！
+                    yield kline_df.copy()
 
-
-                # 依然維持每秒釋放控制權，不吃 CPU 資源
+                # 依然維持每 0.1 秒釋放控制權，不吃 CPU 資源
                 await asyncio.sleep(0.1)
 
         except asyncio.CancelledError:
