@@ -1,0 +1,5 @@
+PySide6==6.11.2
+pandas==3.0.2
+numpy==1.26.4
+ib_async==2.1.0
+futu-api==10.5.6508

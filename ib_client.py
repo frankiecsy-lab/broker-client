@@ -58,7 +58,11 @@ class IBClient():
 
     def _normalize_kline(self,data,ktype):
         data = data.rename(columns={'date': 'time_key'})
-        data['time_key'] = data['time_key'].dt.tz_localize(None)
+        # 🤖 IB 回傳嘅 date 係 string（如 "2026-10-02"），pandas 3.x 會保持 str dtype，直接 .dt 會 crash — 先 parse 成 datetime；若帶 tz 再 strip
+        tk = pd.to_datetime(data['time_key'], errors='coerce')
+        if tk.dt.tz is not None:
+            tk = tk.dt.tz_localize(None)
+        data['time_key'] = tk
         columns_to_drop = ['average', 'name', 'turnover', 'barCount']
         data =  data.drop(columns=columns_to_drop, errors='ignore')
         data['volume'] = data['volume'].astype(int)
@@ -84,24 +88,26 @@ class IBClient():
         return market, symbol,exchange,currency
 
     def _calc_duration(self, ktype, kline_num):
-        # 🤖 根據 K 線週期 + 根數計算最安全嘅歷史窗口（get_kline / stream_kline 共用）
+        # 🤖 根據 K 線週期 + 根數計算歷史窗口（get_kline / stream_kline 共用）
+        # ⚠️ 窗口係「日曆日」但 bar 只喺交易日有：週末/假期食走 ~30%，港股 session 又比美股短 —
+        #    margin 故意放大，確保回傳 > kline_num 根（多取嘅由 .tail(kline_num) 切走）；唔使精準，多過就得
         if ktype == 'K_1M':
-            days = (kline_num // 390) + 1   # 一天約 390 根
+            days = (kline_num // 390) * 2 + 5   # 一天約 390 根（港股基準，最保守）
             return f"{days} D"
         elif ktype == 'K_5M':
-            days = (kline_num // 78) + 1    # 一天約 78 根
+            days = (kline_num // 78) * 2 + 5    # 一天約 78 根
             return f"{days} D"
         elif ktype == 'K_15M':
-            days = (kline_num // 26) + 1    # 一天約 26 根
+            days = (kline_num // 26) * 2 + 5    # 一天約 26 根
             return f"{days} D"
         elif ktype == 'K_60M':
-            days = int(kline_num / 6.5) + 2  # 一天約 6.5 根
+            days = int(kline_num / 5) * 2 + 5   # 港股一日只有 ~5-6 根（美股盤前盤後會多好多）
             return f"{days} D"
         elif ktype == 'K_DAY':
-            months = (kline_num // 20) + 1   # 一個月約 20 個交易日
+            months = (kline_num // 20) * 2 + 3  # 一個月約 20 個交易日，×2 留 margin
             return f"{months} M"
         elif ktype == 'K_WEEK':
-            years = (kline_num // 52) + 1    # 一年 52 週
+            years = (kline_num // 52) * 2 + 2   # 一年 ~50-52 週，×2 留 margin（上市唔夠長就係全部）
             return f"{years} Y"
         else:
             return '2 D'

@@ -1,5 +1,5 @@
 {
-    "kline_num": 100,
+    "kline_num": 1000,
     "kline_adj": "none",
     "source": {
         "get_kline": "ib",

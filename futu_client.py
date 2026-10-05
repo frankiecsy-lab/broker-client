@@ -63,7 +63,7 @@ class FutuClient():
             ret_sub, err_message = quote_ctx.subscribe([code], [ktype], subscribe_push=False,
                                                        session=Session.ALL)
             if ret_sub == RET_OK:  # 订阅成功
-                ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)
+                ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.QFQ)
                 if ret == RET_OK:
                     status=True
                 else:
@@ -92,7 +92,7 @@ class FutuClient():
                 print(f"❌ FUTU stream_kline: 訂閱失敗 {err_msg}")
                 return
             # 2️⃣ 取歷史 K 線做初始底表（HISTORY）
-            ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.NONE)
+            ret, data = quote_ctx.get_cur_kline(code, kline_num, ktype, AuType.QFQ)
             if ret != RET_OK:
                 print("❌ FUTU stream_kline: 歷史 K 線取得失敗")
                 return

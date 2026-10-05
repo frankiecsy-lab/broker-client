@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import asyncio
 from abc import ABC, abstractmethod
@@ -31,8 +32,9 @@ class BrokerClient(ABC):
         return False  # 若內部噴錯，讓異常正常拋出
 
     def _get_config(self, file='config.json'):
-        # 💡 測試小幫手：如果找不到 config.json，自動幫你建立你先前提到的 JSON 結構
-        with open(file, 'r', encoding='utf-8') as f:
+        # 🤖 用本檔案所在目錄解析（唔係 CWD）：GUI 可以由任何工作目錄 import
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), file)
+        with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
     def get_config(self):
@@ -42,12 +44,13 @@ class BrokerClient(ABC):
         pass
 
     # ✨ 核心修正區：直接讀取 config 做 if-else
-    async def get_kline(self,code,ktype,broker=None):
+    async def get_kline(self,code,ktype,broker=None,kline_num=None):
 
         source = self.config.get("source", {}).get("get_kline", "ib")
-        kline_num=self.config.get("kline_num", 100)  # 🤖 同 stream_kline 一致；config 冇填時用 100
         if broker is not None:
             source = broker.lower()
+        # 🤖 傳入 kline_num 可 override config；冇傳就用 config（預設 100）— 同 stream_kline 一致
+        kline_num = int(kline_num) if kline_num is not None else self.config.get("kline_num", 100)
 
         match source:
             case 'ib':
@@ -61,11 +64,12 @@ class BrokerClient(ABC):
                 raise ValueError(f"❌ 錯誤：不支援的券商類型 [{source}]")
 
 
-    async def stream_kline(self, code, ktype, broker=None):
+    async def stream_kline(self, code, ktype, broker=None,kline_num=None):
         source = self.config.get("source", {}).get("stream_kline", "ib")
         if broker is not None:
             source = broker.lower()  # 🤖 同 get_kline 一樣：傳入 broker 可 override config
-        kline_num = self.config.get("kline_num", 100)
+        # 🤖 傳入 kline_num 可 override config；冇傳就用 config（預設 100）— 同 get_kline 一致
+        kline_num = int(kline_num) if kline_num is not None else self.config.get("kline_num", 100)
         match source:
             case "ib":
                 async with self.ib_client as ib:
@@ -104,7 +108,7 @@ async def main():
         print(data)'''
 
         #stream_kline
-        async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu'):
+        async for kline in client.stream_kline(code=code, ktype=ktype,broker='ib'):
             print(kline)
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
