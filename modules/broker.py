@@ -64,6 +64,7 @@ class BrokerClient(ABC):
                 raise ValueError(f"❌ 錯誤：不支援的券商類型 [{source}]")
 
 
+    # ✨ 同 get_kline 一樣回傳 (status, data, message)；成功時 data 係 async generator（要 `async for df in data` 消費）
     async def stream_kline(self, code, ktype, broker=None,kline_num=None):
         source = self.config.get("source", {}).get("stream_kline", "ib")
         if broker is not None:
@@ -73,14 +74,12 @@ class BrokerClient(ABC):
         match source:
             case "ib":
                 async with self.ib_client as ib:
-                    # 🤖 IB 端未來也套用一模一樣的 async for ... yield 邏輯
-                    async for data in ib.stream_kline(code=code, ktype=ktype, kline_num=kline_num):
-                        yield data
+                    # 🤖 IB 端同一個 (status, data, message) 形狀；data = async generator（訂閱已喺 setup 階段完成）
+                    return await ib.stream_kline(code=code, ktype=ktype, kline_num=kline_num)
             case 'futu':
                 async with self.futu_client as futu:
-                    # 🤖 用 async for 接住子類別 yield 出來的水流，並再次 yield 吐給最外層 main
-                    async for data in futu.stream_kline(code=code, ktype=ktype, kline_num=kline_num):
-                        yield data
+                    # 🤖 同 get_kline：直接透傳子類別回傳嘅 (status, data, message) 俾最外層 main
+                    return await futu.stream_kline(code=code, ktype=ktype, kline_num=kline_num)
             case _:
                 # 🛡️ 防禦性設計：萬一有人在 config.json 亂填名字，給予安全警告並報錯
                 raise ValueError(f"❌ 錯誤：不支援的券商類型 [{source}]")
@@ -107,9 +106,11 @@ async def main():
         #status, data, message=await client.get_kline(code=code, ktype=ktype,broker='ib')
         #print(data)
 
-        #stream_kline
-        '''async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu',kline_num=None):
-            print(kline)'''
+        #stream_kline（同 get_kline 形狀：status/data/message；成功時 data 係 async generator）
+        '''status, gen, message = await client.stream_kline(code=code, ktype=ktype,broker='futu',kline_num=None)
+        if status:
+            async for kline in gen:
+                print(kline)'''
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
 if __name__ == "__main__":

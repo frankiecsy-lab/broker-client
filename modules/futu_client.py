@@ -126,10 +126,16 @@ class FutuClient():
         return status, data, message
 
     async def stream_kline(self, code, ktype, kline_num=None):
+        """同 get_kline 一樣回傳 (status, data, message)：
+           - status=True → data 係 async generator（第一次 yield = baseline，之後每筆 push = live tick）；
+             consumer 用 `async for df in data` 消費，停止 = cancel task / .aclose()（finally 會斷呢條 stream 專用連線）
+           - status=False → data=None、message 係失敗原因（訂閱權限 / 歷史取數 / OpenD 連線）"""
         if kline_num is None:
             kline_num = self.kline_num
         # 🤖 獨立 OpenQuoteContext：呢條 stream 專用，唔會同其他 stream 撞 handler / 連線
         quote_ctx = self._new_ctx()
+
+        # Setup 階段（掛 handler + 訂閱 push + 取歷史）— 任何失敗都經 status/message 回報並即刻 close，唔留半訂閱狀態
         try:
             print("FUTU stream_kline...")
             # 1️⃣ 先掛 handler 再訂閱 push — subscribe 之後每一筆推送都有人收，唔會漏 tick
@@ -140,60 +146,71 @@ class FutuClient():
             # 2️⃣ 訂閱 push — 冇 subscribe，OpenD 唔會推任何數據落 handler，buffer 永遠係空
             ret_sub, err_msg = quote_ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
             if ret_sub != RET_OK:
-                print(f"❌ FUTU stream_kline: 訂閱失敗 {err_msg}")
-                return
+                quote_ctx.close()   # 🤖 setup 失敗 → 即刻斷呢條專用連線，唔會漏
+                return False, None, f"FUTU stream_kline: 訂閱失敗 {err_msg}"
 
             # 3️⃣ 取歷史 K 線做初始底表（HISTORY）— B2 fix: 直接用呢條 stream 自己嘅連線，唔多開一條；>1000 自動切分頁
             ret, data = await self._fetch_kline(quote_ctx, code, ktype, kline_num)
             if ret != RET_OK:
-                print(f"❌ FUTU stream_kline: 歷史 K 線取得失敗 {data}")
-                return
-            history_df = self._normalize_kline(data, ktype)
-
-            yield history_df
-            kline_df = history_df.copy()
-
-            # 🔄 進入長線鎖定迴圈
-            while True:
-                yielded = False
-                # 🤖 關鍵檢查（B1 fix）：每圈 drain 晒 buffer 所有待處理 bar — 高頻 push 都唔會無界增長
-                while True:
-                    try:
-                        latest_bar = handler.data_buffer.get_nowait()
-                    except queue.Empty:
-                        break
-                    tk = latest_bar['time_key'].iloc[0]
-                    if not kline_df.empty:
-                        last_tk = kline_df['time_key'].iloc[-1]
-                        if tk < last_tk:
-                            # 🤖 比最後一行舊：忽略，避免亂序拼接（只跳過呢條 bar，唔會跳外層 sleep）
-                            continue
-                        elif tk == last_tk:
-                            # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
-                            kline_df.iloc[-1] = latest_bar.iloc[0]
-                        else:
-                            # 🆕 新 bar（tk > last_tk）：接到尾端
-                            kline_df = pd.concat([kline_df, latest_bar], ignore_index=True)
-                    else:
-                        # 新 bar：接到尾端
-                        kline_df = pd.concat([kline_df, latest_bar], ignore_index=True)
-                    yielded = True
-                if yielded:
-                    # ✨ yield 完整更新後嘅 K 線表到最外層（每圈最多一次快照），絕對不斷線！
-                    yield kline_df.copy()
-                # 依然維持每 0.1 秒釋放控制權，不吃 CPU 資源（固定執行，唔會俾 continue 跳過）
-                await asyncio.sleep(0.1)
-
-        except asyncio.CancelledError:
-            print("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
-            raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
-        finally:
-            # 🤖 安全拔線：清 handler + 斷呢條 stream 專用連線
+                quote_ctx.close()   # 🤖 setup 失敗 → 即刻斷呢條專用連線，唔會漏
+                return False, None, f"FUTU stream_kline: 歷史 K 線取得失敗 {data}"
+        except Exception as e:   # 🤖 OpenD 未開 / 連線被拒等 exception → 一樣經 status/message 回報
             try:
-                quote_ctx.set_handler(None)
+                quote_ctx.close()
             except Exception:
                 pass
-            quote_ctx.close()
+            return False, None, f"FUTU stream_kline: {type(e).__name__}: {e}"
+
+        history_df = self._normalize_kline(data, ktype)
+
+        async def _stream():
+            try:
+                # 🤖 先 yield 一次完整歷史快照（baseline），再進入長線鎖定迴圈
+                yield history_df
+                kline_df = history_df.copy()
+
+                while True:
+                    yielded = False
+                    # 🤖 關鍵檢查（B1 fix）：每圈 drain 晒 buffer 所有待處理 bar — 高頻 push 都唔會無界增長
+                    while True:
+                        try:
+                            latest_bar = handler.data_buffer.get_nowait()
+                        except queue.Empty:
+                            break
+                        tk = latest_bar['time_key'].iloc[0]
+                        if not kline_df.empty:
+                            last_tk = kline_df['time_key'].iloc[-1]
+                            if tk < last_tk:
+                                # 🤖 比最後一行舊：忽略，避免亂序拼接（只跳過呢條 bar，唔會跳外層 sleep）
+                                continue
+                            elif tk == last_tk:
+                                # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
+                                kline_df.iloc[-1] = latest_bar.iloc[0]
+                            else:
+                                # 🆕 新 bar（tk > last_tk）：接到尾端
+                                kline_df = pd.concat([kline_df, latest_bar], ignore_index=True)
+                        else:
+                            # 新 bar：接到尾端
+                            kline_df = pd.concat([kline_df, latest_bar], ignore_index=True)
+                        yielded = True
+                    if yielded:
+                        # ✨ yield 完整更新後嘅 K 線表到最外層（每圈最多一次快照），絕對不斷線！
+                        yield kline_df.copy()
+                    # 依然維持每 0.1 秒釋放控制權，不吃 CPU 資源（固定執行，唔會俾 continue 跳過）
+                    await asyncio.sleep(0.1)
+
+            except asyncio.CancelledError:
+                print("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
+                raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
+            finally:
+                # 🤖 安全拔線：清 handler + 斷呢條 stream 專用連線
+                try:
+                    quote_ctx.set_handler(None)
+                except Exception:
+                    pass
+                quote_ctx.close()
+
+        return True, _stream(), None
 
     async def get_ticker(self):
         print('Futu get_ticker (來自獨立的 Futu 引擎)')

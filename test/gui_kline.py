@@ -427,10 +427,10 @@ class CollapsiblePanel(QWidget):
 class Worker(QObject):
     """住喺 worker thread；只發 signal，絕不碰 widget。
 
-    stream_kline 係 async generator：consumer task 做 `async for df in gen`，
-    第一次 yield = baseline，之後每筆 = live tick。停止 = cancel consumer —
-    CancelledError 會傳入 broker generator 自己嘅 except/finally（IB 除 updateEvent /
-    Futu close context），所以唔會漏訂閱。
+    stream_kline 同 get_kline 一樣回傳 (status, data, message)：成功時 data 係 async generator，
+    consumer task 做 `async for df in gen` — 第一次 yield = baseline，之後每筆 = live tick。
+    停止 = cancel consumer — CancelledError 會傳入 broker generator 自己嘅 except/finally（IB 除 updateEvent /
+    Futu close context），所以唔會漏訂閱；setup 失敗（權限/代號解析）則直接經 message 回報。
     """
 
     update = Signal(object)  # {"phase": "baseline"|"tick"|"done", "error","ticks","n_rows","records"}
@@ -484,23 +484,28 @@ class Worker(QObject):
         cancelled = False
         try:
             client = await self.ensure_client()
-            gen = client.stream_kline(code=code, ktype=ktype, kline_num=num, broker=broker)
-            last_emit = 0.0
-            async for df in gen:
-                if not st["baseline"]:
-                    # 1️⃣ 第一次 yield：歷史底表快照，即刻發（唔等節流）
-                    st["baseline"] = True
-                    st.update(n_rows=len(df), records=self._records(df))
-                    self.update.emit(self._payload("baseline", st))
-                    last_emit = time.monotonic()
-                else:
-                    # 2️⃣ live tick：計數 + 節流後先轉 records / emit（推送率可以高好多）
-                    st["ticks"] += 1
-                    now = time.monotonic()
-                    if now - last_emit >= self.UI_INTERVAL:
+            # 🤖 新形狀（同 get_kline）：(status, data, message)；成功時 data 係 async generator
+            status, gen, message = await client.stream_kline(code=code, ktype=ktype, kline_num=num, broker=broker)
+            if not status or gen is None:
+                # 🤖 setup 失敗（權限/代號解析/訂閱）→ 直接經 done phase 嘅 error 欄顯示喺狀態列
+                st["error"] = f"stream_kline 啟動失敗：{message}"
+            else:
+                last_emit = 0.0
+                async for df in gen:
+                    if not st["baseline"]:
+                        # 1️⃣ 第一次 yield：歷史底表快照，即刻發（唔等節流）
+                        st["baseline"] = True
                         st.update(n_rows=len(df), records=self._records(df))
-                        self.update.emit(self._payload("tick", st))
-                        last_emit = now
+                        self.update.emit(self._payload("baseline", st))
+                        last_emit = time.monotonic()
+                    else:
+                        # 2️⃣ live tick：計數 + 節流後先轉 records / emit（推送率可以高好多）
+                        st["ticks"] += 1
+                        now = time.monotonic()
+                        if now - last_emit >= self.UI_INTERVAL:
+                            st.update(n_rows=len(df), records=self._records(df))
+                            self.update.emit(self._payload("tick", st))
+                            last_emit = now
         except asyncio.CancelledError:
             cancelled = True
             raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
