@@ -11,7 +11,7 @@ from ib_client import IBClient
 
 pd.set_option('display.width', None)
 pd.set_option('display.max_colwidth', None)
-pd.set_option('display.max_rows', None)
+#pd.set_option('display.max_rows', None)
 class BrokerClient(ABC):
     def __init__(self):
         self.config = self._get_config()
@@ -96,7 +96,7 @@ class BrokerClient(ABC):
 
 
 async def main():
-    code='HK.00700'
+    code='HK.HSImain'
     ktype='K_1M'
     async with BrokerClient() as client:
         #client.get_config()
@@ -108,7 +108,7 @@ async def main():
         print(data)'''
 
         #stream_kline
-        async for kline in client.stream_kline(code=code, ktype=ktype,broker='ib'):
+        async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu',kline_num=None):
             print(kline)
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
