@@ -7,13 +7,18 @@ from ib_async import *
 # 🤖 自動解析會 probe 一堆無效 contract，ib_async 每次都用 logging 印 "Error 200 No security definition" — 太嘈；本檔自己會印 ❌/✅
 logging.getLogger('ib_async').setLevel(logging.CRITICAL)
 
+logger = logging.getLogger(__name__)   # 🤖 P5：print → logging（app-level config 喺 modules/__init__.py）
+
+from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
+from .kline_schema import reorder_kline, validate_kline   # 🤖 P3：K 線 schema 一來源 + 驗證
 
 
-class IBClient():
+class IBClient(BrokerBase):
+    NAME = "ib"   # 🤖 P1：registry key（同 config.json 嘅 section 名）
+
     def __init__(self,config=None):
-        #print(f'IB Config {config}')
-        config = config or {}   # 🤖 允許唔傳 config（用預設 host/port）
-        self.host = config.get("host", "127.0.0.1")
+        super().__init__(config)   # 🤖 P1：BrokerBase.__init__ 存 self.config（允許唔傳 → {}）
+        self.host = self.config.get("host", "127.0.0.1")
         self.port = config.get("port", 4001)
         self.symbol_map={ 'US':'USD', 'HK':'HKD' }
         self.currency_map={ 'US':'USD', 'HK':'HKD' }
@@ -47,6 +52,10 @@ class IBClient():
             self.ib = ib
             self._connected = True
 
+    async def connect(self):
+        """🤖 P1：BrokerBase 生命週期 hook — 建立共享持久連線（冪等）。"""
+        await self._ensure_connected()
+
     async def disconnect(self):
         """斷開共享連線（由 BrokerClient.__aexit__ 統一呼叫）。"""
         async with self._connect_lock:
@@ -60,7 +69,7 @@ class IBClient():
 
     async def __aenter__(self):
         # 共享連線：只確保已連接；離開 context 唔會斷線（8 條 stream 共用同一條）
-        await self._ensure_connected()
+        await self.connect()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -80,9 +89,7 @@ class IBClient():
         for col in ['open', 'high', 'low', 'close']:
             if col in data.columns:
                 data[col] = data[col].astype(float)
-        standard_order = ['time_key', 'open', 'high', 'low', 'close', 'volume']
-        data = data[standard_order]
-        return data
+        return reorder_kline(data)   # 🤖 P3：欄順序由 kline_schema 統一（唔再各自維護 standard_order）
 
     def _parse_code(self,code):
         if "." not in code:
@@ -131,7 +138,7 @@ class IBClient():
                 resolved = details[0].contract
                 extra = f"，月份={resolved.lastTradeDateOrContractMonth}" \
                     if resolved.secType == 'FUT' and resolved.lastTradeDateOrContractMonth else ''
-                print(f"[{code}] 自動解析到 {resolved.secType} @ {resolved.exchange}{extra}")
+                logger.info("[%s] 自動解析到 %s @ %s%s", code, resolved.secType, resolved.exchange, extra)
                 self._resolved[cache_key] = resolved
                 return resolved
         raise ValueError(f"無法解析 {code}（試過: {sec_type or 'FUTURE/STOCK/INDEX'}）")
@@ -158,7 +165,7 @@ class IBClient():
                 resolved = details[0].contract   # 🤖 用 TWS 解析後嘅（currency/exchange 正確）
                 self._resolved[key] = resolved
                 return resolved
-            print(f"[{code}] {exchange} 搵唔到股票，fallback 自動解析")
+            logger.info("[%s] %s 搵唔到股票，fallback 自動解析", code, exchange)
             resolved = await self._resolve_contract(symbol, sec_type)   # 🤖 例如 US.NQ → NQ 期貨
             self._resolved[key] = resolved   # 🤖 用完整 code cache — 否則每次呼叫都重新 probe Stock（stream_kline 會印第二次 fallback）
             return resolved
@@ -218,7 +225,7 @@ class IBClient():
         if not bars:   # 🤖 TWS timeout/error 時 ib_async 靜默回傳空 list（唔係 exception，logging 又被食）— 唔 guard 會永遠 hang 喺下面迴圈
             return False, None, "IB stream_kline: keepUpToDate 無數據（TWS timeout/error）"
 
-        print("IB stream_kline...")
+        logger.info("IB stream_kline...")
 
         # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar
         kline_df = data.copy()
@@ -269,15 +276,15 @@ class IBClient():
 
                     # 🤖 訂閱後 120s 仍零 update：TWS 對無 market data permission 嘅 contract 會靜默唔 stream（Error 420）— 提示一次然後結束，唔好永遠 hang
                     if (update_count == 0 and time.monotonic() - sub_start > 120):
-                        print(f"⚠️ IB stream_kline [{code}]: 訂閱後 120s 仍無任何 live update — "
-                              f"大概率係 account 無呢個 contract 嘅 real-time market data（TWS Error 420），"
-                              f"check IB Account Management → Market Data")
+                        logger.warning("⚠️ IB stream_kline [%s]: 訂閱後 120s 仍無任何 live update — "
+                                       "大概率係 account 無呢個 contract 嘅 real-time market data（TWS Error 420），"
+                                       "check IB Account Management → Market Data", code)
                         break   # 🤖 冇數據可 stream，繼續等只會永遠 hang — 交還控制權俾上層
 
                     # 每 0.1 秒釋放一次控制權，維持背景監聽，不佔用 CPU 資源
                     await asyncio.sleep(0.1)
             except asyncio.CancelledError:
-                print("🛑 [IB PUSH] 接收到終止指令，正在關閉監聽事件...")
+                logger.info("🛑 [IB PUSH] 接收到終止指令，正在關閉監聽事件...")
                 raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
             finally:
                 # 安全拔線：移除本地監聽 + 通知 TWS 停止推送（否則 keepUpToDate 會喺 server 端繼續 stream，8 條 stream 共用連線會漏）
@@ -291,7 +298,7 @@ class IBClient():
 
     async def get_kline(self,code,ktype,kline_num=100):
         await self._ensure_connected()  # 🤖 確保共享連線已建立（冪等）
-        print('IB get_kline')
+        logger.info('IB get_kline')
         status=False
         data, message=None,None
 
@@ -322,8 +329,12 @@ class IBClient():
 
         status=True
         data = self._normalize_kline(data, ktype)
+        # 🤖 P3：成功前驗 schema — 唔符合契約就當失敗回報（stream_kline 嘅 baseline 用呢個 df，已一併覆蓋）
+        ok, why = validate_kline(data)
+        if not ok:
+            return False, None, f"IB get_kline: K 線 schema 驗證失敗 {why}"
         return status, data, message
 
 
     async def get_ticker(self):
-        print('Ib get_ticker (來自獨立的 IB 引擎)')
+        logger.info('Ib get_ticker (來自獨立的 IB 引擎)')

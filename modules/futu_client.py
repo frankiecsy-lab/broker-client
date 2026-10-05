@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 from datetime import date, timedelta
 from futu import *
@@ -6,8 +7,13 @@ import pandas as pd
 import queue
 import queue
 
+from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
+from .kline_schema import reorder_kline, validate_kline   # 🤖 P3：K 線 schema 一來源 + 驗證
+
 SysConfig.enable_console_log(False)
 logging.getLogger('futu').setLevel(logging.ERROR)
+
+logger = logging.getLogger(__name__)   # 🤖 P5：print → logging（app-level config 喺 modules/__init__.py）
 
 class MyCurKlineHandler(CurKlineHandlerBase):
     def __init__(self, normalize=None, ktype=None):
@@ -32,12 +38,14 @@ class MyCurKlineHandler(CurKlineHandlerBase):
         return ret_code, content
 
 
-class FutuClient():
+class FutuClient(BrokerBase):
+    NAME = "futu"   # 🤖 P1：registry key（同 config.json 嘅 section 名）
+
     def __init__(self,config=None):
-        self.host = config.get("host", "127.0.0.1")
-        self.port = config.get("port", 11111)
-        self.kline_num = config.get("kline_num", 1000)
-        pass
+        super().__init__(config)   # 🤖 P1：BrokerBase.__init__ 存 self.config（允許唔傳 → {}）
+        self.host = self.config.get("host", "127.0.0.1")
+        self.port = self.config.get("port", 11111)
+        self.kline_num = self.config.get("kline_num", 1000)
 
     async def __aenter__(self):
         # 🤖 共享 context 已廢：而家每條 stream / 每次 get_kline 用獨立連線（見 _new_ctx）
@@ -54,18 +62,20 @@ class FutuClient():
     def _normalize_kline(self,data,ktype):
         # B4 fix: 先 copy 再改，唔會 mutate caller 傳入嘅 df
         data = data.copy()
+        # 🤖 P1 fix：time_key 統一 parse 成 datetime（同 IB）— futu 回傳 str（"2026-10-05 13:30:00" / "2026-10-05"），
+        #    之前保持 str 令 schema 同 IB 唔一致；K_DAY/K_WEEK 舊嘅 str.replace(' 00:00:00') 分支一併廢（parse 後唔使再處理）
+        tk = pd.to_datetime(data['time_key'], errors='coerce')
+        if getattr(tk.dt, 'tz', None) is not None:
+            tk = tk.dt.tz_localize(None)
+        data['time_key'] = tk
         columns_to_drop = ['code', 'name', 'turnover', 'pe_ratio', 'turnover_rate', 'last_close']
-        if ktype in ['K_DAY', 'K_WEEK', 'K_MON']:
-            data['time_key'] = data['time_key'].astype(str).str.replace(' 00:00:00', '')
         data =  data.drop(columns=columns_to_drop, errors='ignore')
         # B5 fix: NaN volume（session 邊界情況）填 0，唔好喺 callback thread astype(int) 炸咗靜默丟 push
         data['volume'] = data['volume'].fillna(0).astype(int)
         for col in ['open', 'high', 'low', 'close']:
             if col in data.columns:
                 data[col] = data[col].astype(float)
-        standard_order = ['time_key', 'open', 'high', 'low', 'close', 'volume']
-        data = data[standard_order]
-        return data
+        return reorder_kline(data)   # 🤖 P3：欄順序由 kline_schema 統一（唔再各自維護 standard_order）
 
     # 🤖 K 線取數 helper：≤1000 用 get_cur_kline；>1000 自動切 request_history_kline 分頁
     # （富途服務端硬限制：get_cur_kline num 最大 1000、request_history_kline 單次 max_count 最大 1000）
@@ -101,7 +111,7 @@ class FutuClient():
     async def get_kline(self,code,ktype,kline_num=None):
         if kline_num is None:
             kline_num = self.kline_num
-        print('FUTU get_kline')
+        logger.info('FUTU get_kline')
         status=False
         data, message=None,None
         quote_ctx = self._new_ctx()  # 🤖 獨立連線，用完即斷
@@ -122,6 +132,11 @@ class FutuClient():
             quote_ctx.close()
 
         data = self._normalize_kline(data,ktype) if status else None
+        # 🤖 P3：成功前驗 schema — 唔符合契約就當失敗回報，唔會俾壞形狀流出到 caller
+        if status:
+            ok, why = validate_kline(data)
+            if not ok:
+                return False, None, f"FUTU get_kline: K 線 schema 驗證失敗 {why}"
 
         return status, data, message
 
@@ -137,7 +152,7 @@ class FutuClient():
 
         # Setup 階段（掛 handler + 訂閱 push + 取歷史）— 任何失敗都經 status/message 回報並即刻 close，唔留半訂閱狀態
         try:
-            print("FUTU stream_kline...")
+            logger.info("FUTU stream_kline...")
             # 1️⃣ 先掛 handler 再訂閱 push — subscribe 之後每一筆推送都有人收，唔會漏 tick
             # 🤖 handler 收到 push 即刻 normalize，buffer 入面存嘅就係標準 6 欄 df
             handler = MyCurKlineHandler(normalize=self._normalize_kline, ktype=ktype)
@@ -162,6 +177,11 @@ class FutuClient():
             return False, None, f"FUTU stream_kline: {type(e).__name__}: {e}"
 
         history_df = self._normalize_kline(data, ktype)
+        # 🤖 P3：baseline 驗 schema — 唔符合就斷呢條專用連線並當失敗回報
+        ok, why = validate_kline(history_df)
+        if not ok:
+            quote_ctx.close()
+            return False, None, f"FUTU stream_kline: K 線 schema 驗證失敗 {why}"
 
         async def _stream():
             try:
@@ -200,7 +220,7 @@ class FutuClient():
                     await asyncio.sleep(0.1)
 
             except asyncio.CancelledError:
-                print("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
+                logger.info("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
                 raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
             finally:
                 # 🤖 安全拔線：清 handler + 斷呢條 stream 專用連線
@@ -213,4 +233,4 @@ class FutuClient():
         return True, _stream(), None
 
     async def get_ticker(self):
-        print('Futu get_ticker (來自獨立的 Futu 引擎)')
+        logger.info('Futu get_ticker (來自獨立的 Futu 引擎)')

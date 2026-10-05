@@ -35,8 +35,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from modules.broker import BrokerClient
-from modules.futu_client import FutuClient
-from modules.ib_client import IBClient
+from modules.registry import BROKERS as BROKER_REGISTRY   # 🤖 P2：券商名單一來源（唔再硬編碼）
 
 
 # 🎨 主題跟 stock_client/app/theme/palette.py（dark）；蠟燭色對已過 CVD 驗證（deutan ΔE 11.1）
@@ -48,7 +47,7 @@ C_UP, C_DOWN = "#F23645", "#089981"   # 📈 紅漲 / 📉 綠跌（港股慣例
 
 KTYPES = ["K_1M", "K_5M", "K_15M", "K_60M", "K_DAY", "K_WEEK"]
 COLUMNS = ["time_key", "open", "high", "low", "close", "volume"]
-BROKERS = ["futu", "ib"]        # 券商 combo 選項；默認 futu
+BROKERS = list(BROKER_REGISTRY.keys())   # 🤖 P2：讀 registry（加新 client 自動出現）；順序 = 註冊順序，默認第一個（futu）
 DEFAULT_CODE = "HK.HSImain"     # 恒指期貨主連（Futu "main" 尾碼代碼）
 
 QSS = f"""
