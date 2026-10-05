@@ -1,17 +1,28 @@
 import asyncio
+import logging
+import time
 import pandas as pd
-from ib_async import IB, Stock, util
+from ib_async import *
+
+# 🤖 自動解析會 probe 一堆無效 contract，ib_async 每次都用 logging 印 "Error 200 No security definition" — 太嘈；本檔自己會印 ❌/✅
+logging.getLogger('ib_async').setLevel(logging.CRITICAL)
 
 
 
 class IBClient():
     def __init__(self,config=None):
         #print(f'IB Config {config}')
+        config = config or {}   # 🤖 允許唔傳 config（用預設 host/port）
         self.host = config.get("host", "127.0.0.1")
         self.port = config.get("port", 4001)
         self.symbol_map={ 'US':'USD', 'HK':'HKD' }
         self.currency_map={ 'US':'USD', 'HK':'HKD' }
         self.exchange_map = {'US': 'SMART', 'HK': 'SEHK'}
+        # 🤖 裸 symbol（無 MARKET. 前綴）唔使 map — _resolve_contract 按順序試 FUTURE(逐交易所) → STOCK(SMART) → INDEX(逐交易所)，
+        #    由 TWS reqContractDetails 判斷；解析結果 cache 咗（同一 symbol+類型只查一次）。同 ib_futures_kline.py
+        self._resolved = {}
+        self.future_exchanges = ('CME', 'CBOT', 'NYMEX', 'COMEX', 'ICEUS')
+        self.index_exchanges  = ('CBOE', 'NASDAQ', 'NYSE', 'ARCX')
         self.ktype_map = {
             # 🤖 只用作 bar size；duration 改由 _calc_duration() 按 kline_num 動態計算（get/stream 共用）
             'K_1M':   ('1 min',   None),
@@ -87,21 +98,83 @@ class IBClient():
 
         return market, symbol,exchange,currency
 
-    def _calc_duration(self, ktype, kline_num):
+    # 🤖 sec_type hint 接受短名（TWS wire format）或全名
+    _SEC_TYPE_ALIASES = {'FUT': 'FUTURE', 'STK': 'STOCK', 'IND': 'INDEX'}
+
+    async def _resolve_contract(self, code, sec_type=None):
+        """唔使 map：按順序試 FUTURE(逐交易所) → STOCK(SMART) → INDEX(逐交易所)，由 TWS reqContractDetails 判斷。
+
+        sec_type 指定（FUT/STK/IND）就只試嗰種類型；回傳解析到嘅 contract
+        （exchange/currency 正確；期貨已帶 TWS 填好嘅 front month）。"""
+        code = code.strip().upper()
+        if sec_type:
+            sec_type = self._SEC_TYPE_ALIASES.get(sec_type.upper(), sec_type.upper())
+        cache_key = f"{code}:{sec_type or ''}"
+        if cache_key in self._resolved:
+            return self._resolved[cache_key]
+
+        candidates = []
+        if sec_type in (None, 'FUTURE'):
+            candidates += [Future(symbol=code, lastTradeDateOrContractMonth='', exchange=ex, currency='USD')
+                           for ex in self.future_exchanges]
+        if sec_type in (None, 'STOCK'):
+            candidates.append(Stock(code, 'SMART', 'USD'))
+        if sec_type in (None, 'INDEX'):
+            candidates += [Index(code, ex, 'USD') for ex in self.index_exchanges]
+
+        for c in candidates:
+            try:
+                details = await self.ib.reqContractDetailsAsync(c)
+            except Exception:
+                continue   # TWS 對無效 contract 會報錯（如 Error 200），當「唔係呢種」繼續試下個
+            if details:
+                resolved = details[0].contract
+                extra = f"，月份={resolved.lastTradeDateOrContractMonth}" \
+                    if resolved.secType == 'FUT' and resolved.lastTradeDateOrContractMonth else ''
+                print(f"[{code}] 自動解析到 {resolved.secType} @ {resolved.exchange}{extra}")
+                self._resolved[cache_key] = resolved
+                return resolved
+        raise ValueError(f"無法解析 {code}（試過: {sec_type or 'FUTURE/STOCK/INDEX'}）")
+
+    async def _make_contract(self, code):
+        """由 code 建立 contract：
+           - 'MARKET.SYMBOL'（US.AAPL / HK.00700）→ 先試股票；唔係股票（如 US.NQ）就 fallback 自動解析
+           - 裸 symbol（ES / NQ / SPX）→ 自動解析 FUTURE/STOCK/INDEX；CODE:TYPE 可強制類型（ES:FUT）"""
+        code = code.strip()
+        sec_type = None
+        if ':' in code:   # 🤖 CODE:TYPE 強制類型，同一代號多市場時用
+            code, sec_type = code.split(':', 1)
+        if '.' in code:   # 舊格式 MARKET.SYMBOL → 先試股票（US/HK market map）
+            market, symbol, exchange, currency = self._parse_code(code)
+            key = code.upper()
+            if key in self._resolved:
+                return self._resolved[key]
+            contract = Stock(symbol, exchange, currency)
+            try:
+                details = await self.ib.reqContractDetailsAsync(contract)
+            except Exception:
+                details = []
+            if details:
+                resolved = details[0].contract   # 🤖 用 TWS 解析後嘅（currency/exchange 正確）
+                self._resolved[key] = resolved
+                return resolved
+            print(f"[{code}] {exchange} 搵唔到股票，fallback 自動解析")
+            resolved = await self._resolve_contract(symbol, sec_type)   # 🤖 例如 US.NQ → NQ 期貨
+            self._resolved[key] = resolved   # 🤖 用完整 code cache — 否則每次呼叫都重新 probe Stock（stream_kline 會印第二次 fallback）
+            return resolved
+        return await self._resolve_contract(code, sec_type)
+
+    def _calc_duration(self, ktype, kline_num, sec_type='STK'):
         # 🤖 根據 K 線週期 + 根數計算歷史窗口（get_kline / stream_kline 共用）
         # ⚠️ 窗口係「日曆日」但 bar 只喺交易日有：週末/假期食走 ~30%，港股 session 又比美股短 —
         #    margin 故意放大，確保回傳 > kline_num 根（多取嘅由 .tail(kline_num) 切走）；唔使精準，多過就得
-        if ktype == 'K_1M':
-            days = (kline_num // 390) * 2 + 5   # 一天約 390 根（港股基準，最保守）
-            return f"{days} D"
-        elif ktype == 'K_5M':
-            days = (kline_num // 78) * 2 + 5    # 一天約 78 根
-            return f"{days} D"
-        elif ktype == 'K_15M':
-            days = (kline_num // 26) * 2 + 5    # 一天約 26 根
-            return f"{days} D"
-        elif ktype == 'K_60M':
-            days = int(kline_num / 5) * 2 + 5   # 港股一日只有 ~5-6 根（美股盤前盤後會多好多）
+        # ⚠️ bar 密度按資產類型：期貨 CME Globex 一日 ~23h 都有 bar；股票/指數只有 RTH 6.5h（+盤前盤後）
+        if sec_type in ('FUT', 'FUTURE'):   # 🤖 TWS 回傳嘅 contract.secType 係短名 'FUT'
+            per_day = {'K_1M': 1300, 'K_5M': 260, 'K_15M': 87, 'K_60M': 23}   # ~23h × 60
+        else:
+            per_day = {'K_1M': 390, 'K_5M': 78, 'K_15M': 26, 'K_60M': 5}      # 港股基準，最保守（同之前一樣）
+        if ktype in per_day:
+            days = (kline_num // per_day[ktype]) * 2 + 5
             return f"{days} D"
         elif ktype == 'K_DAY':
             months = (kline_num // 20) * 2 + 3  # 一個月約 20 個交易日，×2 留 margin
@@ -116,21 +189,20 @@ class IBClient():
         # 0️⃣ 確保共享連線已建立（冪等，8 條 stream 共用同一條）
         await self._ensure_connected()
         # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）
-        status, data, _ = await self.get_kline(code, ktype, kline_num=kline_num)
+        status, data, message = await self.get_kline(code, ktype, kline_num=kline_num)
         if not status or data is None:
-            print("❌ IB stream_kline: 歷史 K 線取得失敗")
+            print(f"❌ IB stream_kline: 歷史 K 線取得失敗 {message}")   # 🤖 印出真正原因（如「無法解析 HSI」），唔好靜默
             return
         print("IB stream_kline...")
 
         # 2️⃣ 先 yield 一次完整歷史快照
         yield data
 
-        market, symbol, exchange, currency = self._parse_code(code)
-        contract = Stock(symbol, exchange, currency)
+        contract = await self._make_contract(code)   # 🤖 同 get_kline（MARKET.SYMBOL → 股票；裸 symbol → 自動解析，上面 get_kline 已 cache）
 
         # 🤖 同 get_kline 用同一個動態窗口，確保歷史底表同 live 訂閱範圍一致
         bar_size, _ = self.ktype_map.get(ktype, ('1 day', None))
-        duration = self._calc_duration(ktype, kline_num)
+        duration = self._calc_duration(ktype, kline_num, contract.secType)
 
         try:
             bars = await self.ib.reqHistoricalDataAsync(
@@ -145,19 +217,25 @@ class IBClient():
         except Exception as e:
             print(f"❌ IB stream_kline: keepUpToDate 訂閱失敗 {e}")
             return
+        if not bars:   # 🤖 TWS timeout/error 時 ib_async 靜默回傳空 list（唔係 exception，logging 又被食）— 唔 guard 會永遠 hang 喺下面迴圈
+            print("❌ IB stream_kline: keepUpToDate 無數據（TWS timeout/error），停止")
+            return
 
         # 🤖 累積器：以 get_kline 嘅歷史做底，之後逐條拼接新 bar
         kline_df = data.copy()
 
         # 🤖 快取區：記錄有幾多筆新推送等待送出
         data_buffer = []
+        update_count = 0   # 🤖 累計收到幾多次 push（用於偵測「訂閱咗但完全冇數據」）
+        sub_start = time.monotonic()
 
         # 🤖 定義回呼函式：IB 每 PUSH 一次就將最新 bar 拼入 K 線表，並標記待送
         def on_bar_update(bars_obj, has_new_bar):
-            nonlocal kline_df
+            nonlocal kline_df, update_count
             latest_row = self._normalize_kline(util.df(bars_obj).tail(1), ktype)
             if latest_row.empty:
                 return
+            update_count += 1
             tk = latest_row['time_key'].iloc[0]
             if not kline_df.empty:
                 last_tk = kline_df['time_key'].iloc[-1]
@@ -167,6 +245,9 @@ class IBClient():
                 elif tk == last_tk:
                     # 同一根 bar（盤中更新）：原地覆蓋最後一行，唔會重複
                     kline_df.iloc[-1] = latest_row.iloc[0]
+                else:
+                    # 🆕 新 bar（tk > last_tk）：接到尾端 — 漏咗呢支分支，分鐘一過表就永遠凍喺舊 bar（「不更新」）
+                    kline_df = pd.concat([kline_df, latest_row], ignore_index=True)
             else:
                 # 新 bar：接到尾端
                 kline_df = pd.concat([kline_df, latest_row], ignore_index=True)
@@ -180,8 +261,17 @@ class IBClient():
             while True:
                 # 🤖 有新推送就 yield 完整更新後嘅 K 線表到最外層，連線絕對不會斷！
                 if data_buffer:
-                    data_buffer.pop(0)
+                    # 🤖 B1 fix（同 futu）：一次 drain 晒所有待送標記、每圈最多 yield 一次快照 —
+                    #    高頻 push（RTH NVDA 可以 >10 ticks/s）唔會令 buffer 無界增長
+                    data_buffer.clear()
                     yield kline_df.copy()
+
+                # 🤖 訂閱後 120s 仍零 update：TWS 對無 market data permission 嘅 contract 會靜默唔 stream（Error 420）— 提示一次然後結束，唔好永遠 hang
+                if (update_count == 0 and time.monotonic() - sub_start > 120):
+                    print(f"⚠️ IB stream_kline [{code}]: 訂閱後 120s 仍無任何 live update — "
+                          f"大概率係 account 無呢個 contract 嘅 real-time market data（TWS Error 420），"
+                          f"check IB Account Management → Market Data")
+                    break   # 🤖 冇數據可 stream，繼續等只會永遠 hang — 交還控制權俾上層
 
                 # 每 0.1 秒釋放一次控制權，維持背景監聽，不佔用 CPU 資源
                 await asyncio.sleep(0.1)
@@ -190,8 +280,12 @@ class IBClient():
             print("🛑 [IB PUSH] 接收到終止指令，正在關閉監聽事件...")
             raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
         finally:
-            # 安全拔線
+            # 安全拔線：移除本地監聽 + 通知 TWS 停止推送（否則 keepUpToDate 會喺 server 端繼續 stream，8 條 stream 共用連線會漏）
             bars.updateEvent -= on_bar_update
+            try:
+                self.ib.cancelHistoricalData(bars)   # 🤖 取消 TWS 端嘅 keepUpToDate 訂閱
+            except Exception:
+                pass   # 連線已斷就唔使理
 
     async def get_kline(self,code,ktype,kline_num=100):
         await self._ensure_connected()  # 🤖 確保共享連線已建立（冪等）
@@ -199,13 +293,14 @@ class IBClient():
         status=False
         data, message=None,None
 
-        market, symbol, exchange,currency = self._parse_code(code)
-        # 定義商品：Apple 股票
-        contract = Stock(symbol, exchange, currency)
+        try:
+            contract = await self._make_contract(code)   # 🤖 MARKET.SYMBOL → 股票；裸 symbol → 自動解析 FUTURE/STOCK/INDEX
+        except ValueError as e:
+            return False, None, str(e)
 
-        # 🤖 動態窗口（同 stream_kline 共用同一個 _calc_duration）
+        # 🤖 動態窗口（同 stream_kline 共用同一個 _calc_duration）；bar 密度按資產類型
         bar_size, _ = self.ktype_map.get(ktype, ('1 day', None))
-        duration = self._calc_duration(ktype, kline_num)
+        duration = self._calc_duration(ktype, kline_num, contract.secType)
 
         try:
             # 尋找 K 線數據
@@ -220,6 +315,8 @@ class IBClient():
             data = util.df(bars).tail(kline_num).reset_index(drop=True)
         except Exception as e:
             return False, None, str(e)
+        if not bars:   # 🤖 TWS timeout/error → ib_async 靜默回傳空 list（唔係 exception）— 同 ib_futures_kline.py 一樣要 guard
+            return False, None, 'IB 無回傳數據（timeout 或 error，檢查代號/月份）'
 
         status=True
         data = self._normalize_kline(data, ktype)

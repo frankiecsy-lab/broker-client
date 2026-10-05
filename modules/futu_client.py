@@ -5,11 +5,10 @@ from futu import *
 import pandas as pd
 import queue
 import queue
-# 1. ✨ 核心修正：告訴富途官方大腦，不要在控制台打印任何連線狀態日誌！
-SysConfig.enable_console_log(False)
 
-# 2. ✨ 保險防護：將 Python 底層名為 'futu' 的管道音量調到最低，只准輸出錯誤
+SysConfig.enable_console_log(False)
 logging.getLogger('futu').setLevel(logging.ERROR)
+
 class MyCurKlineHandler(CurKlineHandlerBase):
     def __init__(self, normalize=None, ktype=None):
         super(MyCurKlineHandler, self).__init__()
@@ -35,7 +34,6 @@ class MyCurKlineHandler(CurKlineHandlerBase):
 
 class FutuClient():
     def __init__(self,config=None):
-        #print(f'Futu Config {config}')
         self.host = config.get("host", "127.0.0.1")
         self.port = config.get("port", 11111)
         self.kline_num = config.get("kline_num", 1000)

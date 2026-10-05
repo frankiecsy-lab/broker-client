@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from datetime import date, timedelta
 import pandas as pd
 from futu import *
-from futu_client import FutuClient
-from ib_client import IBClient
+from .futu_client import FutuClient
+from .ib_client import IBClient
 
 pd.set_option('display.width', None)
 pd.set_option('display.max_colwidth', None)
@@ -96,20 +96,20 @@ class BrokerClient(ABC):
 
 
 async def main():
-    code='HK.HSImain'
+    code='HK.HSI'
     ktype='K_1M'
     async with BrokerClient() as client:
         #client.get_config()
 
         #get_kline
-        '''status, data, message=await client.get_kline(code=code, ktype=ktype,broker='futu')
-        print(data)
-        status, data, message=await client.get_kline(code=code, ktype=ktype,broker='ib')
-        print(data)'''
+        #status, data, message=await client.get_kline(code=code, ktype=ktype,broker='futu')
+        #print(data)
+        #status, data, message=await client.get_kline(code=code, ktype=ktype,broker='ib')
+        #print(data)
 
         #stream_kline
-        async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu',kline_num=None):
-            print(kline)
+        '''async for kline in client.stream_kline(code=code, ktype=ktype,broker='futu',kline_num=None):
+            print(kline)'''
 
 # 🚀 --- 必須使用 asyncio.run() 作為整支非同步程式的啟動引擎 ---
 if __name__ == "__main__":
