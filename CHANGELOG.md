@@ -6,6 +6,22 @@
 
 ## 2026-10-06
 
+### 新增 `requirements.txt` — 匯合全專案第三方依賴（單一安裝入口）
+檔案：`requirements.txt`（新）、`README.md`
+
+- 由全專案 import 分析匯出 + pip 實測版本 pin：PySide6==6.11.2、pandas==3.0.2、numpy==1.26.4、matplotlib==3.10.1、futu-api==10.5.6508、ib_async==2.1.0；opencc-python-reimplemented==0.1.7 標明 optional（symbol_search 有 ImportError fallback）。
+- PySide6_Essentials/Addons/shiboken6 自動隨 PySide6 裝，唔重複 pin。
+
+### One Gate Page 2 全功能測試 — 嵌入 gui_fulltest 全部功能（takeCentralWidget，零改動 gui_fulltest.py）
+檔案：`gateway/pages/fulltest_page.py`（placeholder → 真頁）、`README.md`
+
+- **嵌入模式**：同 K綫頁同一 pattern — 建隱藏 top-level `gui_fulltest.MainWindow()` 保留引用 alive（LoopThread / TestWorker lifecycle 綁定喺個 instance）；`takeCentralWidget()` 搬入頁面 layout，QSS 喺**頁面層級**套用。
+- **退出清理鏈**：`aboutToQuit` → `self._win.close()` — hidden top-level 一樣 deliver QCloseEvent → 跑原 closeEvent 完整條鏈（request_shutdown → thread.wait(3000)，shutdown 會先釋放 IB clientId=99），idempotent。
+- **theme 傳播**：gui_fulltest 冇 C_* 常數 / QSS template（同 gui_kline 唔同）→ 本頁自帶 string.Template QSS（palette 值由 `gateway.theme.THEMES` 注入，經 listener registry 跟隨外殼切換）+ 運行時重新指派 `gf.STATE_STYLE` QColor — light 用原檔色值（本身為淺底設計），dark 用提亮變體；label 字串保留。section header 有明確 item role bg/fg → 覆蓋 QSS，雙主題本來就清晰。
+- **i18n**：gui_fulltest 冇自己嘅語言 combo → `retranslate()` no-op（外殼三語切換唔影響嵌入頁內容）。
+- **單獨運行**：`python gateway/pages/fulltest_page.py` → standalone window（Run All / Stop 全部可用）。
+- **驗證**：in-process smoke 39/39 PASS（objectNames ×5、table 20×8 結構、worker-ready 啟用 Run All/Stop、dark→light→dark theme 雙向 QSS + STATE_STYLE 顏色斷言、One Gate shell 入面嵌入頁 objectNames + nav 切換 + **Run All wiring enqueue 18 indices**、shell theme toggle 傳播、三語 retranslate no-crash、quit chain ×2 + idempotent、StandaloneWindow entry）；2 個入口點（gateway.py / fulltest_page.py standalone）offscreen sanity EXIT=124 無 traceback。
+
 ### One Gate Page 1 K綫測試 — 嵌入 gui_kline 全部功能（takeCentralWidget，零改動 gui_kline.py）
 檔案：`gateway/pages/kline_page.py`（placeholder → 真頁）、`gateway/theme.py`（加 listener registry）
 

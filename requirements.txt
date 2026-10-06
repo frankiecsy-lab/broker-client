@@ -1,0 +1,18 @@
+# broker_client / One Gate 依賴清單（匯合自全專案 import 分析，版本 = 實測環境 pin）
+# 安裝：pip install -r requirements.txt
+
+# ── GUI framework ────────────────────────────────────────────────
+PySide6==6.11.2            # gateway/* + test/gui_*.py（Essentials/Addons/shiboken6 自動隨裝，唔使另 pin）
+
+# ── Data / charting ──────────────────────────────────────────────
+pandas==3.0.2              # modules/* K 線 DataFrame（broker/futu_client/ib_client/kline_schema）
+numpy==1.26.4              # test/gui_kline.py 圖表數值運算
+matplotlib==3.10.1         # K 線圖渲染 — backend_qtagg 嵌入 PySide6（test/gui_kline.py）
+
+# ── Broker SDKs ──────────────────────────────────────────────────
+futu-api==10.5.6508        # Futu OpenD SDK（import futu；modules/futu_client、symbol_search、Page 3 probe）
+ib_async==2.1.0            # IB Gateway async client（modules/ib_client clientId=99、Page 3 probe clientId=98）
+
+# ── Optional：繁簡轉換（modules/symbol_search.py fuzzy search 正規化）──
+# 代碼有 try/except ImportError fallback — 冇裝都跑得通，只係 match 變 script-sensitive。
+opencc-python-reimplemented==0.1.7   # import opencc

@@ -15,8 +15,8 @@
 ## 🚀 安裝與運行
 
 ```bash
-pip install PySide6 pandas futu-api ibapi opencc-python-reimplemented
-# opencc 係非硬依賴（冇就 fallback 唔做繁簡轉換）
+pip install -r requirements.txt
+# opencc 係非硬依賴（冇就 fallback 唔做繁簡轉換，requirements.txt 內有標明）
 ```
 
 前置：OpenD（Futu，port 11111）+ TWS / IB Gateway（IB，port 4001）開緊。配置喺 `modules/config.json`（host/port、kline_num、source 預設 broker）。
@@ -32,6 +32,7 @@ pip install PySide6 pandas futu-api ibapi opencc-python-reimplemented
 
 - `AGENTS.MD` - **[AI 開發規範]**：定義 Agent 溝通語言（廣東話）、CHANGELOG/README 維護責任、環境清理與切片式讀取原則。
 - `CHANGELOG.md` - **[版本變更日誌]**：所有功能增刪 / Bug 修復 / 架構調整嘅唯一事實來源（倒序）。
+- `requirements.txt` - **[依賴清單]**：全專案第三方依賴匯合（PySide6/pandas/numpy/matplotlib/futu-api/ib_async + opencc optional），版本 = 實測 pin；`pip install -r requirements.txt`。
 - `modules/__init__.py` - **[package 入口 + logging config]**：app-level log format；匯出 BrokerClient / BROKERS / KLINE_COLUMNS。依賴：registry、broker、kline_schema。
 - `modules/broker.py` - **[BrokerClient 統一 dispatch]**：config-driven 實例化所有 registry client；`get_kline(broker=)` / `stream_kline(broker=)` 按 broker 參數 > config.source 分發；`__aexit__` 斷晒所有連線。依賴：registry、config.json。
 - `modules/broker_base.py` - **[統一契約 BrokerBase]**：所有 client 嘅 ABC — NAME + get_kline/stream_kline triple 形狀 + `resolve_symbol()`（L2 hook，預設 identity）+ disconnect no-op。
@@ -50,7 +51,7 @@ pip install PySide6 pandas futu-api ibapi opencc-python-reimplemented
 - `gateway/pages/__init__.py` - **[pages package 入口]**：加新頁說明（檔 + PAGE_KEYS 一行）。無 import。
 - `gateway/pages/base_page.py` - **[standalone window 基類 + run_standalone()]**：StandaloneWindow 包任何 page 組件成獨立視窗（標題欄 + 語言 combo + theme 按鈕）；各頁底層調用佢單獨 Debug。依賴：i18n、theme。
 - `gateway/pages/kline_page.py` - **[Page 1 K綫測試]**：嵌入 gui_kline 全部功能（takeCentralWidget，零改動原檔）— theme/i18n 跟隨外殼、退出觸發原 closeEvent 清理鏈。可單獨運行。
-- `gateway/pages/fulltest_page.py` - **[Page 2 全功能測試]**：目前 placeholder 卡片；#04 將嵌入 gui_fulltest 全部功能。可單獨運行。
+- `gateway/pages/fulltest_page.py` - **[Page 2 全功能測試]**：嵌入 gui_fulltest 全部功能（takeCentralWidget，零改動原檔）— theme 傳播（頁面級 QSS + STATE_STYLE 換色）、退出觸發原 closeEvent 清理鏈。可單獨運行。
 - `gateway/pages/connection_page.py` - **[Page 3 連綫測試]**：目前 placeholder 卡片；#05 將實裝 config.json 參數編輯 + FUTU OpenD / IB Gateway 連綫速度測試。可單獨運行。
 - `test/gui_kline.py` - **[主 GUI]**：模糊搜尋標的欄 + get/stream K 線圖表 + i18n 繁中/EN + FETCH。依賴：modules、symbol_search。
 - `test/gui_fulltest.py` - **[綜合測試矩陣 GUI]**：18 rows 無輸入欄位 + FUTU/IB broker 分區 header（setSpan）；每行 ▶ / 雙擊獨立跑、Run All 全並發（per-row task）、Stop cancel+清理、成功行數據拆疊（最新 bar 喺第一行）、隱藏 EXPECTED FAIL toggle（display-only）。依賴：modules。

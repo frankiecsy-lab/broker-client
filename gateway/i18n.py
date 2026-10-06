@@ -48,12 +48,62 @@ STRINGS = {
         '本页会嵌入综合测试矩阵（test/gui_fulltest.py）：18 rows futu/ib × get/stream、Run All 全并发、Stop 清理。\n目前是占位页 — ticket #04 实装。',
         'This page will embed the Full Test Matrix (test/gui_fulltest.py): 18 rows futu/ib x\nget/stream, fully-parallel Run All, Stop cleanup. Currently a placeholder — implemented in ticket #04.'),
 
-    # ── Page 3：連綫測試（placeholder → ticket #05 config editor + probes）──
+    # ── Page 3：連綫測試（ticket #05 config editor + probes）──
     'page_connection_title': _s('連綫測試', '连线测试', 'Connection Test'),
     'page_connection_body': _s(
-        '呢頁會提供 config.json 參數編輯（保留 JSON 結構）+ FUTU OpenD / IB Gateway 連綫測試按鈕（狀態及速度）。\n目前係 placeholder — ticket #05 實裝。',
-        '本页会提供 config.json 参数编辑（保留 JSON 结构）+ FUTU OpenD / IB Gateway 连线测试按钮（状态及速度）。\n目前是占位页 — ticket #05 实装。',
-        'This page will provide a config.json parameter editor (preserving JSON structure) +\nFUTU OpenD / IB Gateway connection test buttons (status and speed). Currently a placeholder — implemented in ticket #05.'),
+        '編輯 config.json 參數（保留 JSON 結構與其他欄位）+ FUTU OpenD / IB Gateway 連綫測試按鈕（狀態及速度）。',
+        '编辑 config.json 参数（保留 JSON 结构与其他字段）+ Futu OpenD / IB Gateway 连线测试按钮（状态及速度）。',
+        'Edit config.json parameters (preserving JSON structure and other fields) +\nFutu OpenD / IB Gateway connection test buttons (status and speed).'),
+
+    # ── Page 3：config editor ──
+    'conn_cfg_title': _s('config.json 參數', 'config.json 参数', 'Config Parameters'),
+    'conn_futu_group': _s('富途 Futu OpenD', '富途 Futu OpenD', 'Futu OpenD'),
+    'conn_ib_group': _s('IB Gateway（TWS）', 'IB Gateway（TWS）', 'IB Gateway (TWS)'),
+    'conn_host': _s('Host', 'Host', 'Host'),
+    'conn_port': _s('Port', 'Port', 'Port'),
+    'conn_kline_num': _s('K 線數量 (kline_num)', 'K线数量 (kline_num)', 'K-line count (kline_num)'),
+    'conn_save': _s('保存 config.json', '保存 config.json', 'Save config.json'),
+    'conn_saved_ok': _s(
+        '✅ 已保存（JSON 結構與其他欄位原封不動）',
+        '✅ 已保存（JSON 结构与其他字段原封不动）',
+        '✅ Saved (JSON structure and other fields untouched)'),
+    'conn_save_err': _s('❌ 保存失敗：{err}', '❌ 保存失败：{err}', '❌ Save failed: {err}'),
+    'conn_int_err': _s(
+        'port / kline_num 必須係整數',
+        'port / kline_num 必须是整数',
+        'port / kline_num must be integers'),
+
+    # ── Page 3：probes ──
+    'conn_probe_title': _s('連線狀態及速度測試', '连接状态及速度测试', 'Connection Status & Speed Test'),
+    'conn_probe_futu_btn': _s(
+        'FUTU OpenD 連綫測試', 'FUTU OpenD 连线测试', 'Test Futu OpenD Connection'),
+    'conn_probe_ib_btn': _s(
+        'IB Gateway 連綫測試（clientId=98）', 'IB Gateway 连线测试（clientId=98）',
+        'Test IB Gateway Connection (clientId=98)'),
+    'conn_testing': _s('⏳ 測試中…', '⏳ 测试中…', 'Testing…'),
+    'conn_futu_ok': _s(
+        '✅ FUTU OpenD 連線成功\n   • 連線時間：{connect_ms} ms\n   • get_global_state RTT：{rtt_ms} ms',
+        '✅ Futu OpenD 连接成功\n   • 连接时间：{connect_ms} ms\n   • get_global_state RTT：{rtt_ms} ms',
+        '✅ Futu OpenD connected\n   • Connect time: {connect_ms} ms\n   • get_global_state RTT: {rtt_ms} ms'),
+    'conn_futu_fail': _s(
+        '❌ FUTU OpenD 連線失敗：{reason}', '❌ Futu OpenD 连接失败：{reason}',
+        '❌ Futu OpenD connection failed: {reason}'),
+    'conn_ib_ok': _s(
+        '✅ IB Gateway 連線成功（獨立 clientId=98，與主 session 唔衝突）\n   • handshake 時間：{connect_ms} ms\n   • server-time RTT (reqCurrentTime)：{rtt_ms} ms',
+        '✅ IB Gateway 连接成功（独立 clientId=98，与主 session 不冲突）\n   • handshake 时间：{connect_ms} ms\n   • server-time RTT (reqCurrentTime)：{rtt_ms} ms',
+        '✅ IB Gateway connected (independent clientId=98, no conflict with main session)\n   • Handshake time: {connect_ms} ms\n   • Server-time RTT (reqCurrentTime): {rtt_ms} ms'),
+    'conn_ib_fail': _s(
+        '❌ IB Gateway 連線失敗：{reason}', '❌ IB Gateway 连接失败：{reason}',
+        '❌ IB Gateway connection failed: {reason}'),
+    # probe 失敗原因（如實分類，唔 fake success）
+    'conn_reason_refused': _s(
+        'port 冇開或服務未啟動（Connection refused）',
+        '端口未开或服务未启动（Connection refused）',
+        'Port not open or service not running (connection refused)'),
+    'conn_reason_timeout': _s(
+        'timeout — host 不可達或服務無回應',
+        '超时 — host 不可达或服务无响应',
+        'Timeout — host unreachable or no response from service'),
 }
 
 
