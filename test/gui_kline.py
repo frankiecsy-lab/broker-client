@@ -6,7 +6,8 @@
   0. 大字現價列：標的 · 週期 | 較上一根 bar 漲跌 | 大字現價（每次資料刷新閃一下白）| 右上角時間（最後推送 wall clock + 最新 K 線時間 — 一眼睇出推送有冇行緊）
   1. 巨大窗口：K 綫圖（蠟燭 + 成交量，默認顯示最後 300 根；現價水平虛線 + 右側標注跟隨最新 close；滑鼠懸停看 OHLCV 明細）
      🖱️ 手勢：左鍵拖動 = 左右平移 · 滾輪 = 以游標為中心縮放 · 右鍵 = 復位跟隨最新
-  2. 中間控制列：標的代碼 / K 綫週期 / KLINE 數量 / 券商（futu/ib）/ 測試按鍵（開始/停止串流）+ 狀態標籤
+  2. 中間控制列：標的代碼（🤖 P8 模糊輸入 — Futu code/中文名/英文名，本地 index + pass-through）
+     / K 綫週期 / KLINE 數量 / 券商（futu/ib）/ 測試按鍵 + 語言切換（繁中/EN）+ FETCH 掣 + 狀態標籤
   3. 下方可折疊窗口：DF 結果表 — 每次更新前必先清空；時間反向排序（最新 bar 喺最上面）
 
 券商由控制列 combo 選擇（默認 futu），override config.json → source.stream_kline；
@@ -20,14 +21,15 @@ import math
 import os
 import sys
 import time
+from datetime import datetime
 
 # 🤖 由任何工作目錄直接運行都得：加 project root 先 import 到 broker.py
 BROKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BROKER_DIR)
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QHBoxLayout,
-                               QLabel, QLineEdit, QMainWindow, QPushButton,
+from PySide6.QtCore import QObject, QThread, Qt, Signal, QTimer, QStringListModel   # 🤖 QStringListModel 喺 QtCore（唔係 QtGui）
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QCompleter,
+                               QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
                                QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import numpy as np
@@ -36,6 +38,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from modules.broker import BrokerClient
 from modules.registry import BROKERS as BROKER_REGISTRY   # 🤖 P2：券商名單一來源（唔再硬編碼）
+from modules.symbol_search import get_directory          # 🤖 P8：本地 symbol index（fuzzy 輸入 + FETCH）
 
 
 # 🎨 主題跟 stock_client/app/theme/palette.py（dark）；蠟燭色對已過 CVD 驗證（deutan ΔE 11.1）
@@ -71,6 +74,50 @@ QHeaderView::section {{
     background: {C_CARD}; color: {C_TEXT}; border: none; border-bottom: 1px solid {C_BORDER}; padding: 3px;
 }}
 """
+
+
+# 🤖 P8 i18n：繁中/英文切換 — 所有 UI label / status template 都經 t()（key → (zh, en)）。
+#    語言名本身（"繁中"/"EN"）唔翻譯 — 用戶揀嘅就係佢自己嘅語言。
+STRINGS = {
+    'title':          ("stream_kline 測試 — 持續實時 K 綫串流", "stream_kline test - live K-line streaming"),
+    'lbl_symbol':     ("標的代碼", "Symbol"),
+    'lbl_interval':   ("K綫週期", "Interval"),
+    'lbl_bars':       ("KLINE數量", "Bars"),
+    'lbl_broker':     ("券商", "Broker"),
+    'btn_start':      ("▶ 開始串流", "Start stream"),
+    'btn_stop':       ("⏹ 停止串流", "Stop stream"),
+    'panel_btn':      ("DF 結果", "Data frame"),
+    'rows_info':      ("共 {total} 行 · ⏪ 最新在上", "{total} rows - newest on top"),
+    'rows_trunc':     ("（顯示最後 {n} 行）", "(showing last {n})"),
+    'ready':          ("就緒 · 默認 {broker} / {code} — 撳 [開始串流] 訂閱實時 K 綫",
+                       "Ready - default {broker} / {code} - press [Start stream] to subscribe"),
+    'index_fresh':    ("就緒 · symbol index {n} 條（{age}h 前更新）· 默認 {broker} / {code}",
+                       "Ready - symbol index {n} entries (updated {age}h ago) - default {broker} / {code}"),
+    'bridge_wait':    ("⏳ 橋接初始化中，請稍候再試", "Bridge initializing, please retry in a moment"),
+    'need_code':      ("❌ 請輸入標的代碼（格式 MARKET.SYMBOL，如 HK.00700）",
+                       "Enter a symbol (format MARKET.SYMBOL, e.g. HK.00700)"),
+    'subscribing':    ("⏳ 訂閱 {code} {ktype} ×{num}（{broker}）…",
+                       "Subscribing {code} {ktype} x{num} ({broker})..."),
+    'baseline_ok':    ("🟢 baseline 已載入 · 共 {n} 根 — 等待實時推送…",
+                       "Baseline loaded - {n} bars, waiting for live ticks..."),
+    'streaming':      ("串流中 · 收到 {ticks} 次推送 · 共 {n} 根 · 最後 bar {last_t}",
+                       "Streaming - {ticks} ticks received - {n} bars - last bar {last_t}"),
+    'stopped':        ("⏹ 已停止 · 共收到 {ticks} 次推送（baseline 外）· 最後 {n} 根",
+                       "Stopped - {ticks} ticks (excl. baseline) - last {n} bars"),
+    'err_suffix':     ("（檢查：代碼格式 · OpenD/IB 連線 · 行情權限）",
+                       "(check: code format, OpenD/IB connection, quote permission)"),
+    'last_push':      ("最後推送 {now} · 最新K線 {bar}", "Last push {now} - latest bar {bar}"),
+    'fetch_start':    ("⏳ FETCH symbol index…", "Fetching symbol index..."),
+    'fetch_progress': ("⏳ FETCH {label}（{n}）…", "FETCH {label} ({n})..."),
+    'fetch_ok':       ("✅ FETCH 完成 · {msg}", "FETCH done - {msg}"),
+    'fetch_fail':     ("❌ FETCH 失敗：{msg}", "FETCH failed: {msg}"),
+}
+
+
+def t(lang, key, **kw):
+    """STRINGS[key] → lang 對應 template + format（**kw）。GUI 所有可翻譯文字唯一入口。"""
+    s = STRINGS[key][0] if lang == 'zh' else STRINGS[key][1]
+    return s.format(**kw) if kw else s
 
 
 def _plain(value):
@@ -366,9 +413,12 @@ class CollapsiblePanel(QWidget):
         super().__init__(parent)
         self.columns = list(columns)
         self._collapsed = False
+        self.lang = 'zh'          # 🤖 P8 i18n：set_lang() 切換（MainWindow._retranslate）
+        self._info_total = 0      # 行數 info 重算用（語言切換時要重新翻譯）
+        self._info_shown = 0
 
         head = QHBoxLayout()
-        self.btn = QPushButton("▼ DF 結果")
+        self.btn = QPushButton("▼ " + t('zh', 'panel_btn'))
         self.btn.setFlat(True)
         self.btn.setCursor(Qt.PointingHandCursor)
         self.btn.setStyleSheet(
@@ -400,7 +450,26 @@ class CollapsiblePanel(QWidget):
     def toggle(self):
         self._collapsed = not self._collapsed
         self.table.setVisible(not self._collapsed)
-        self.btn.setText(("▲ " if self._collapsed else "▼ ") + "DF 結果")
+        self._refresh_btn_text()
+
+    # 🤖 P8 i18n：語言切換 → 按鍵 + info 重新翻譯（行數狀態保留喺 _info_total/_info_shown）
+    def set_lang(self, lang):
+        self.lang = lang
+        self._refresh_btn_text()
+        self._refresh_info()
+
+    def _refresh_btn_text(self):
+        self.btn.setText(("▲ " if self._collapsed else "▼ ") + t(self.lang, 'panel_btn'))
+
+    def _refresh_info(self):
+        total, shown = self._info_total, self._info_shown
+        if not total:
+            self.info.setText("")
+            return
+        s = t(self.lang, 'rows_info', total=total)
+        if total > shown:
+            s += t(self.lang, 'rows_trunc', n=shown)
+        self.info.setText(s)
 
     def set_dataframe(self, records: list[dict]):
         """顯示 DF 結果 — 🧹 每次更新前必先清空（規格要求）；⏪ 時間反向排序，最新放上面。"""
@@ -413,11 +482,13 @@ class CollapsiblePanel(QWidget):
                 if ccol > 0:
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(r, ccol, it)
-        total = len(records)
-        self.info.setText(f"共 {total} 行 · ⏪ 最新在上" + (f"（顯示最後 {len(show)} 行）" if total > len(show) else ""))
+        self._info_total, self._info_shown = len(records), len(show)
+        self._refresh_info()
 
     def clear(self):
         self.table.setRowCount(0)
+        self._info_total = 0
+        self._info_shown = 0
         self.info.setText("")
 
 
@@ -618,14 +689,70 @@ class LoopThread(QThread):
             time.sleep(0.01)
 
 
+# ─────────────────────── 🤖 P8：fuzzy 輸入 + FETCH（本地 symbol index） ───────────────────────
+
+class FuzzyCompleter(QCompleter):
+    """🤖 P8 模糊輸入：model 由 MainWindow._on_code_changed 每次 keypress 重建（search() hits，已排序/截斷）；
+       filterAcceptsRow 全放行 → popup 顯示 = model 原樣（bypass 內建 prefix filter — 佢唔識重排）。
+       pass-through 保留：冇 hit / 輸入已經係準確 code → 空 model → 唔彈 popup，用戶打咩都照樣提交。"""
+
+    def __init__(self, directory, parent=None):
+        super().__init__([], parent)
+        self._dir = directory
+        self.lang = 'zh'   # 🤖 dropdown name 跟 GUI 語言（MainWindow._retranslate 更新）
+        self.setCaseSensitivity(Qt.CaseInsensitive)
+        self.setModel(QStringListModel())
+
+    def set_query(self, q):
+        """每次 keypress call：重建 model；有 hit 先彈 popup。回傳有冇 hit。"""
+        q = str(q).strip()
+        if not q or self._dir.has_code(q):
+            # 🤖 空 / 準確 code（包括揀完之後嘅那次觸發）→ 唔好彈返 popup
+            self.model().setStringList([])
+            return False
+        items = []
+        for e in self._dir.search(q, limit=20):
+            name = self._dir.display_name(e['code'], self.lang)   # O(1)，跟語言
+            items.append(f"{e['code']}  {name}" if name else e['code'])
+        self.model().setStringList(items)
+        if items:
+            self.complete()   # 🤖 C++ complete()：popup 顯示 model（filterAcceptsRow 全放行）
+        return bool(items)
+
+    def filterAcceptsRow(self, index, parent):
+        return True   # model 只含 search hits — 全部接受（排序已經喺 search 做咗）
+
+
+class FetchThread(QThread):
+    """🤖 P8 FETCH：background 跑 SymbolDirectory.fetch（blocking OpenD 枚舉 ~5s）— GUI thread 唔會卡。
+       progress/done 都係 signal（跨線程只准 plain types）。"""
+
+    progress = Signal(str, int)   # (label e.g. "US/STOCK", rows kept)
+    done = Signal(bool, str)      # (ok, message)
+
+    def __init__(self, directory, parent=None):
+        super().__init__(parent)
+        self._dir = directory
+
+    def run(self):
+        try:
+            ok, msg = self._dir.fetch(markets=('US', 'HK'),
+                                      progress_cb=lambda label, n: self.progress.emit(label, int(n)))
+            self.done.emit(bool(ok), str(msg))
+        except Exception as e:   # 🤖 任何異常 → honest done(False)（GUI 靠 signal 收復狀態）
+            logging.exception("symbol index fetch failed")
+            self.done.emit(False, f"{type(e).__name__}: {e}")
+
+
 # ─────────────────────────────── 主窗口 ───────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("stream_kline 測試 — 持續實時 K 綫串流")
         self.resize(1150, 780)
         self._streaming = False   # E2E / 狀態用：有冇串流進行中
+        self.lang = 'zh'          # 🤖 P8 i18n：繁中/英文（lang_combo → _retranslate）
+        self.directory = get_directory()   # 🤖 P8：本地 symbol index（disk cache）
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -635,7 +762,7 @@ class MainWindow(QMainWindow):
 
         # ── 最上方：大字現價列（標的 · 週期 | 漲跌 | 大字現價；資料刷新閃一下）──
         price_row = QHBoxLayout()
-        self.sym_label = QLabel(f"{DEFAULT_CODE} · K_1M")
+        self.sym_label = QLabel("—")   # 🤖 實際文字由 _retranslate()/_sym_text() 填（要等 code_edit 建立）
         self.sym_label.setStyleSheet(
             f"color: {C_MUTED}; font-size: 14px; font-weight: bold; background: transparent;")
         self.delta_label = QLabel("")
@@ -658,33 +785,47 @@ class MainWindow(QMainWindow):
         self.chart = KlineChart()
         lay.addWidget(self.chart, stretch=3)
 
-        # ── 中間：控制列（標的代碼 / K 綫週期 / KLINE 數量 / 券商 / 測試按鍵）+ 狀態 ──
+        # ── 中間：控制列（標的代碼 / K 綫週期 / KLINE 數量 / 券商 / 測試按鍵 / 語言 / FETCH）+ 狀態 ──
         ctrl = QHBoxLayout()
+        self.lbl_symbol = QLabel(t('zh', 'lbl_symbol'))   # 🤖 存 attribute — _retranslate 要改文字
         self.code_edit = QLineEdit(DEFAULT_CODE)
+        self.code_edit.setObjectName("code_edit")         # E2E hook
+        self.completer = FuzzyCompleter(self.directory)    # 🤖 P8：模糊輸入（本地 index，pass-through）
+        self.code_edit.setCompleter(self.completer)
+        self.completer.activated.connect(self._on_completer_activated)
         self.ktype_combo = QComboBox()
         self.ktype_combo.addItems(KTYPES)
         self.ktype_combo.setCurrentText("K_1M")
         self.num_spin = QSpinBox()
         self.num_spin.setRange(1, 5000)
         self.num_spin.setValue(200)
+        self.lbl_interval = QLabel(t('zh', 'lbl_interval'))
+        self.lbl_bars = QLabel(t('zh', 'lbl_bars'))
         self.broker_combo = QComboBox()
         self.broker_combo.addItems(BROKERS)
         self.broker_combo.setCurrentText("futu")   # 🏦 默認 futu
-        self.test_btn = QPushButton("▶ 開始串流")
+        self.lbl_broker = QLabel(t('zh', 'lbl_broker'))
+        self.test_btn = QPushButton(t('zh', 'btn_start'))
         self.test_btn.setMinimumWidth(120)
-        ctrl.addWidget(QLabel("標的代碼"))
+        self.lang_combo = QComboBox()              # 🤖 P8 i18n：語言名本身唔翻譯（繁中/EN）
+        self.lang_combo.setObjectName("lang_combo")
+        self.lang_combo.addItems(["繁中", "EN"])
+        self.fetch_btn = QPushButton("⟳ FETCH")    # 🤖 P8：手動 refresh symbol index（兩語同文）
+        self.fetch_btn.setObjectName("fetch_btn")
+        ctrl.addWidget(self.lbl_symbol)
         ctrl.addWidget(self.code_edit, 1)
-        ctrl.addWidget(QLabel("K綫週期"))
+        ctrl.addWidget(self.lbl_interval)
         ctrl.addWidget(self.ktype_combo)
-        ctrl.addWidget(QLabel("KLINE數量"))
+        ctrl.addWidget(self.lbl_bars)
         ctrl.addWidget(self.num_spin)
-        ctrl.addWidget(QLabel("券商"))
+        ctrl.addWidget(self.lbl_broker)
         ctrl.addWidget(self.broker_combo)
         ctrl.addWidget(self.test_btn)
+        ctrl.addWidget(self.lang_combo)
+        ctrl.addWidget(self.fetch_btn)
         lay.addLayout(ctrl)
 
-        self.status_label = QLabel(f"就緒 · 默認 {BROKERS[0]} / {DEFAULT_CODE} — 撳 [開始串流] 訂閱實時 K 綫")
-        self._set_status(self.status_label.text(), "muted")
+        self.status_label = QLabel("")
         lay.addWidget(self.status_label)
 
         # ── 下方：可折疊 DF 結果窗口 ──
@@ -695,6 +836,22 @@ class MainWindow(QMainWindow):
         self.thread.worker_ready.connect(self._on_worker_ready)
         self.thread.start()
         self.test_btn.clicked.connect(self.on_test_clicked)
+        self.lang_combo.currentIndexChanged.connect(self.on_lang_changed)
+        self.fetch_btn.clicked.connect(self.start_fetch)
+        self.code_edit.textChanged.connect(self._on_code_changed)
+
+        # 🤖 P8 startup：cache 新鮮 → 顯示 index 狀態；stale/冇 cache → background auto-fetch
+        self.fetch_thread = None
+        if self.directory.entries and not self.directory.is_stale:
+            age = self._index_age_hours()
+            self._set_status(t(self.lang, 'index_fresh', n=len(self.directory.entries),
+                               age=age if age is not None else '?',
+                               broker=BROKERS[0], code=DEFAULT_CODE), "muted")
+        else:
+            self._set_status(t(self.lang, 'ready', broker=BROKERS[0], code=DEFAULT_CODE), "muted")
+            self.start_fetch()
+
+        self._retranslate()   # 🤖 title / labels / sym_label（要等上面所有 widget 建立完）
 
     def _set_status(self, text: str, kind: str):
         color = {"ok": "#3FB950", "err": "#F85149", "muted": C_MUTED}.get(kind, C_TEXT)
@@ -719,8 +876,7 @@ class MainWindow(QMainWindow):
         d = c - prev_c
         pct = (d / prev_c * 100.0) if prev_c else 0.0
         sign = "+" if d >= 0 else ""
-        self.sym_label.setText(
-            f"{self.code_edit.text().strip()} · {self.ktype_combo.currentText()}")
+        self.sym_label.setText(self._sym_text())   # 🤖 P8：+ 本地 index 顯示名（跟語言）
         self.delta_label.setText(f"{sign}{d:.2f} / {sign}{pct:.2f}%")
         self.delta_label.setStyleSheet(
             f"font-size: 13px; font-weight: bold; color: {self._price_color}; background: transparent;")
@@ -739,17 +895,80 @@ class MainWindow(QMainWindow):
     def _on_worker_ready(self, worker: Worker):
         worker.update.connect(self._on_update)
 
+    # --- 🤖 P8：symbol index（fuzzy 輸入 + FETCH + i18n） ------------------------
+    def _sym_text(self):
+        """大字現價列左邊：CODE · KTYPE + 本地 index 顯示名（跟 GUI 語言 — 用戶要求名字跟隨切換）。"""
+        code = self.code_edit.text().strip()
+        ktype = self.ktype_combo.currentText()
+        name = self.directory.display_name(code, self.lang) if code else ''
+        return f"{code} · {ktype}" + (f"  {name}" if name else "")
+
+    def _on_code_changed(self, text):
+        self.sym_label.setText(self._sym_text())
+        self.completer.set_query(text)   # 🤖 fuzzy（本地 index，pass-through）
+
+    def _on_completer_activated(self, text):
+        # 🤖 "CODE  NAME"（兩個 space）→ 填返 canonical code；code 本身唔會含空格
+        self.code_edit.setText(str(text).split('  ', 1)[0])
+
+    def on_lang_changed(self, _idx):
+        self.lang = 'zh' if self.lang_combo.currentIndex() == 0 else 'en'
+        self._retranslate()
+
+    def _retranslate(self):
+        L = self.lang
+        self.setWindowTitle(t(L, 'title'))
+        self.lbl_symbol.setText(t(L, 'lbl_symbol'))
+        self.lbl_interval.setText(t(L, 'lbl_interval'))
+        self.lbl_bars.setText(t(L, 'lbl_bars'))
+        self.lbl_broker.setText(t(L, 'lbl_broker'))
+        self.test_btn.setText(t(L, 'btn_stop' if self._streaming else 'btn_start'))
+        self.panel.set_lang(L)
+        self.completer.lang = L
+        self.sym_label.setText(self._sym_text())
+
+    def _index_age_hours(self):
+        fa = self.directory.fetched_at
+        if not fa:
+            return None
+        try:
+            return int((datetime.now().astimezone() - datetime.fromisoformat(fa)).total_seconds() // 3600)
+        except ValueError:
+            return None
+
+    def start_fetch(self):
+        """🤖 P8 FETCH：background refresh symbol index（startup auto-fetch + 手動 FETCH 掣共用）。"""
+        if self.fetch_thread is not None and self.fetch_thread.isRunning():
+            return   # 已經 fetch 緊 — 唔好開第二條 OpenD 連線
+        self.fetch_btn.setEnabled(False)
+        self._set_status(t(self.lang, 'fetch_start'), "muted")
+        self.fetch_thread = FetchThread(self.directory)
+        self.fetch_thread.progress.connect(self._on_fetch_progress)
+        self.fetch_thread.done.connect(self._on_fetch_done)
+        self.fetch_thread.start()
+
+    def _on_fetch_progress(self, label, n):
+        self._set_status(t(self.lang, 'fetch_progress', label=label, n=n), "muted")
+
+    def _on_fetch_done(self, ok, msg):
+        self.fetch_btn.setEnabled(True)
+        if ok:
+            self._set_status(t(self.lang, 'fetch_ok', msg=msg), "ok")
+            self.sym_label.setText(self._sym_text())   # 🤖 index 更新咗 → 顯示名可能變
+        else:
+            self._set_status(t(self.lang, 'fetch_fail', msg=msg), "err")
+
     # --- 測試按鍵（開始 / 停止串流） ---------------------------------------------
     def on_test_clicked(self):
         if self._streaming:
             self.thread.stop_stream()
             return
         if not self.thread.worker:
-            self._set_status("⏳ 橋接初始化中，請稍候再試", "muted")
+            self._set_status(t(self.lang, 'bridge_wait'), "muted")
             return
         code = self.code_edit.text().strip()
         if not code:
-            self._set_status("❌ 請輸入標的代碼（格式 MARKET.SYMBOL，如 HK.00700）", "err")
+            self._set_status(t(self.lang, 'need_code'), "err")
             return
         ktype = self.ktype_combo.currentText()
         num = self.num_spin.value()
@@ -757,8 +976,9 @@ class MainWindow(QMainWindow):
         self._streaming = True
         for w in (self.code_edit, self.ktype_combo, self.num_spin, self.broker_combo):
             w.setEnabled(False)
-        self.test_btn.setText("⏹ 停止串流")
-        self._set_status(f"⏳ 訂閱 {code} {ktype} ×{num}（{broker}）…", "muted")
+        self.test_btn.setText(t(self.lang, 'btn_stop'))
+        self._set_status(
+            t(self.lang, 'subscribing', code=code, ktype=ktype, num=num, broker=broker), "muted")
         self.thread.start_stream(code, ktype, num, broker)
 
     def _on_update(self, p: dict):
@@ -773,27 +993,28 @@ class MainWindow(QMainWindow):
             last_t = str(records[-1]["time_key"]) if records else "—"
             # 🕒 右上角時間：呢次刷新處理到嘅 wall clock + 最新 K 線時間（每次推送都更新）
             self.time_label.setText(
-                f"最後推送 {time.strftime('%H:%M:%S')} · 最新K線 {_short_time(last_t)}")
+                t(self.lang, 'last_push', now=time.strftime('%H:%M:%S'), bar=_short_time(last_t)))
             if phase == "baseline":
-                self._set_status(f"🟢 baseline 已載入 · 共 {p['n_rows']} 根 — 等待實時推送…", "ok")
+                self._set_status(t(self.lang, 'baseline_ok', n=p['n_rows']), "ok")
             else:
                 self._set_status(
-                    f"串流中 · 收到 {p['ticks']} 次推送 · 共 {p['n_rows']} 根 · 最後 bar {last_t}", "muted")
+                    t(self.lang, 'streaming', ticks=p['ticks'], n=p['n_rows'], last_t=last_t), "muted")
         elif phase == "done":
             self.time_label.setText("—")
             self._streaming = False
             for w in (self.code_edit, self.ktype_combo, self.num_spin, self.broker_combo):
                 w.setEnabled(True)
-            self.test_btn.setText("▶ 開始串流")
+            self.test_btn.setText(t(self.lang, 'btn_start'))
             if p.get("error"):
-                self._set_status(
-                    f"❌ {p['error']}（檢查：代碼格式 · OpenD/IB 連線 · 行情權限）", "err")
+                self._set_status(f"❌ {p['error']}" + t(self.lang, 'err_suffix'), "err")
             else:
                 self._set_status(
-                    f"⏹ 已停止 · 共收到 {p['ticks']} 次推送（baseline 外）· 最後 {p['n_rows']} 根", "ok")
+                    t(self.lang, 'stopped', ticks=p['ticks'], n=p['n_rows']), "ok")
 
     def closeEvent(self, e):
-        # 統一清理：cancel consumer → broker 端拔線 → BrokerClient.__aexit__ → stop loop
+        # 統一清理：FETCH（如跑緊）→ cancel consumer → broker 端拔線 → BrokerClient.__aexit__ → stop loop
+        if self.fetch_thread is not None and self.fetch_thread.isRunning():
+            self.fetch_thread.wait(3000)   # 🤖 等 fetch 寫完 cache（atomic replace，唔會留半份）
         self.thread.request_shutdown()
         self.thread.wait(3000)
         super().closeEvent(e)

@@ -20,6 +20,13 @@ class BrokerBase(ABC):
     async def disconnect(self):
         pass   # 預設 no-op；IB override → 斷開共享持久連線（由 BrokerClient.__aexit__ 統一呼叫）
 
+    def resolve_symbol(self, code):
+        """🤖 P7 L2: canonical Futu quote code → broker-native form（純函數，唔打網絡）。
+           Mapping pipeline：L0 normalize → L1 config alias → L2 呢度嘅規則 → L3 broker 原生 fallback → L4 honest fail。
+           預設 identity（Futu code 本身就係 canonical language — futu client 直接用）；
+           symbol 系統唔同嘅 client override（IB：main suffix / CODE:TYPE，見 ib_client.resolve_symbol）。"""
+        return str(code).strip()
+
     @abstractmethod
     async def get_kline(self, code, ktype, kline_num=None):
         """回傳 (status, data, message)"""

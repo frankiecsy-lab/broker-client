@@ -115,3 +115,6 @@ Thumbs.db
 # ifrs_db_v2/       <-- 如果有本地打包的資料庫資料夾，請放這邊
 # frontend/         <-- 如果 Agent 不需要改前端，強烈建議直接排除整個前端目錄
 
+# P8 symbol index cache（modules/symbol_search.py fetch 產生，~2MB，唔係 source code）
+modules/symbol_index.json
+

@@ -40,6 +40,10 @@ CONTRACT_CASES = {             # 每個 broker 嘅測試 case (code, ktype) — 
     'ib':   ('US.NVDA', 'K_1M'),
 }
 STREAM_SECONDS = 20            # stream 觀察窗口（短過 IB 120s watchdog，長到可抓到幾筆 live tick）
+MAPPING_CASES = {              # 🤖 P7: canonical Futu code → per-broker 期望 (code, expect_success)
+    'futu': ('HK.HSImain', True),   # Futu native — front-month futures 必須解到（OpenD 原生支援 main contract）
+    'ib':   ('HK.HSImain', False),  # 本 account 無 HK derivatives permission（probe 實測全 venue fail）— 必須 honest fail「無法解析」
+}
 
 def _check_shape(df):
     """🤖 P3：驗 K 線 df 符合共享契約（kline_schema.validate_kline — 同 client 端用同一把尺）"""
@@ -114,7 +118,36 @@ async def _contract_one(broker):
         if not msg_stream:
             print(f"RESULT FAIL [{broker}] stream 失敗路徑冇 message", flush=True)
             return False
+        # 🤖 P6：error honesty — IB 無標的必須明講「無法解析」（唔係 generic timeout/error）
+        if broker == 'ib':
+            if '無法解析' not in msg_get:
+                print(f"RESULT FAIL [{broker}] get_kline 無標的 message 應含 無法解析: {msg_get}", flush=True)
+                return False
+            if '無法解析' not in msg_stream:
+                print(f"RESULT FAIL [{broker}] stream 無標的 message 應含 無法解析: {msg_stream}", flush=True)
+                return False
         print(f"fail-path OK get=[{msg_get[:60]}] stream=[{msg_stream[:60]}]", flush=True)
+
+        # 4️⃣ P7: symbol mapping — canonical Futu code per-broker 期望（futu native 成功 / ib honest fail）
+        m_code, expect_ok = MAPPING_CASES.get(broker, ('HK.HSImain', True))
+        status, data, msg_map = await client.get_kline(code=m_code, ktype=ktype, broker=broker, kline_num=None)
+        if expect_ok:
+            if not status or data is None:
+                print(f"RESULT FAIL [{broker}] mapping {m_code} 應成功: {msg_map}", flush=True)
+                return False
+            ok, why = _check_shape(data)
+            if not ok:
+                print(f"RESULT FAIL [{broker}] mapping {m_code} 形狀: {why}", flush=True)
+                return False
+            print(f"mapping OK [{m_code}] rows={len(data)}", flush=True)
+        else:
+            if status or data is not None:
+                print(f"RESULT FAIL [{broker}] mapping {m_code} 應 honest fail (False, None, msg)", flush=True)
+                return False
+            if '無法解析' not in (msg_map or ''):
+                print(f"RESULT FAIL [{broker}] mapping {m_code} message 應含 無法解析: {msg_map}", flush=True)
+                return False
+            print(f"mapping honest-fail OK [{m_code}] msg=[{msg_map[:60]}]", flush=True)
     return True
 
 async def contract_test(brokers):

@@ -12,6 +12,23 @@ logger = logging.getLogger(__name__)   # 🤖 P5：print → logging（app-level
 from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
 from .kline_schema import reorder_kline, validate_kline   # 🤖 P3：K 線 schema 一來源 + 驗證
 
+# 🤖 P6: IB error code → 人話 hint 映射表。由本 account 實測建立（findings 見 CHANGELOG.md P6 節；probe 腳本已清理），唔係憑記憶寫：
+#    162/200/10314/2174 實測過；366/420 係標準 TWS code（呢個 account 觸發唔到 — 歷史數據權限 OK、stream 靜默無數據唔彈錯）。
+#    表外嘅 code 由 _ib_error_text fallback 返「IB Error {code}: {TWS 原文}」— 永遠如實，唔會編造原因。
+_IB_ERROR_HINTS = {
+    162:   '該時段無歷史數據（HMDS returned no data）',
+    200:   '標的唔存在，或本 account 無呢個 market data permission（TWS 對冇權限嘅 security 都回 200）',
+    366:   '歷史數據請求 timeout（TWS busy 或代號/月份有問題）',
+    420:   '無 real-time market data permission — check IB Account Management → Market Data 訂閱',
+    10314: 'endDateTime format 錯誤（應為 yyyymmdd hh:mm:ss xx/xxxx）',
+}
+
+
+def _ib_error_text(code, msg):
+    """🤖 P6: code + TWS 原文 → 人話 message；表外 code fallback 返 TWS 原文 — 永遠如實，唔會編造原因。"""
+    hint = _IB_ERROR_HINTS.get(int(code))
+    return f"{hint}（IB Error {code}）" if hint else f"IB Error {code}: {msg}"
+
 
 class IBClient(BrokerBase):
     NAME = "ib"   # 🤖 P1：registry key（同 config.json 嘅 section 名）
@@ -26,8 +43,14 @@ class IBClient(BrokerBase):
         # 🤖 裸 symbol（無 MARKET. 前綴）唔使 map — _resolve_contract 按順序試 FUTURE(逐交易所) → STOCK(SMART) → INDEX(逐交易所)，
         #    由 TWS reqContractDetails 判斷；解析結果 cache 咗（同一 symbol+類型只查一次）。同 ib_futures_kline.py
         self._resolved = {}
-        self.future_exchanges = ('CME', 'CBOT', 'NYMEX', 'COMEX', 'ICEUS')
-        self.index_exchanges  = ('CBOE', 'NASDAQ', 'NYSE', 'ARCX')
+        # 🤖 P7 probe 實測（test/probe_ib_hsi.py）：(exchange, currency) 對 — SEHK 係 TWS 接受嘅 HK destination（HKEX/CFES/PKE 彈 'Invalid destination'）；
+        #    本 account 無 HK derivatives permission → HSI@SEHK 回 Error 200 No security definition（honest fail），有 HK access 嘅 account 先解到
+        self.future_exchanges = (('CME', 'USD'), ('CBOT', 'USD'), ('NYMEX', 'USD'), ('COMEX', 'USD'), ('ICEUS', 'USD'), ('SEHK', 'HKD'))
+        # 🤖 P7：加 SEHK — HK 指數（如 HSI）喺 TWS 嘅 destination；本 account 無權限時一樣 honest fail
+        self.index_exchanges  = ('CBOE', 'NASDAQ', 'NYSE', 'ARCX', 'SEHK')
+        # 🤖 P7 L1: config.json ib.symbol_aliases — IB-only symbol / 用戶 shorthand → broker-native form（e.g. "MY.SPX": "SPX:IND"）；
+        #    value 用 _make_contract 已支援嘅 format（裸 symbol / CODE:TYPE / MARKET.SYMBOL），唔好喺度 hardcode 合約月份
+        self._symbol_aliases = {str(k).strip().upper(): str(v) for k, v in (self.config.get("symbol_aliases") or {}).items()}
         self.ktype_map = {
             # 🤖 只用作 bar size；duration 改由 _calc_duration() 按 kline_num 動態計算（get/stream 共用）
             'K_1M':   ('1 min',   None),
@@ -41,6 +64,9 @@ class IBClient(BrokerBase):
         self.ib = None
         self._connected = False
         self._connect_lock = asyncio.Lock()
+        # 🤖 P6: 全局 errorEvent sink — [(monotonic_ts, reqId, code, msg)]；ib_async 會把 TWS error 食咗入 logging（上面已壓 CRITICAL），
+        #    冇呢個 sink，空 list 回傳就永遠唔知真正原因。per-request 歸屬靠 bars.reqId（實測：await return 時 event 已 emit）
+        self._error_log = []
 
     async def _ensure_connected(self):
         """確保共享連線已建立；可並發呼叫（冪等），唔會重複 connect。"""
@@ -49,6 +75,12 @@ class IBClient(BrokerBase):
                 return
             ib = IB()
             await ib.connectAsync(self.host, self.port, clientId=99)
+            # 🤖 P6: 掛全局 errorEvent sink — 實測 args=(reqId, code, message, contract)，見 test/probe_ib_errors.py
+            def _on_ib_error(*args):
+                self._error_log.append((time.monotonic(), args[0], args[1], args[2]))
+                if len(self._error_log) > 500:
+                    del self._error_log[:250]   # 🤖 共享連線長命 — 防無界增長
+            ib.errorEvent += _on_ib_error
             self.ib = ib
             self._connected = True
 
@@ -75,6 +107,15 @@ class IBClient(BrokerBase):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # 🤖 故意唔斷線：連線係共享嘅，由 BrokerClient.__aexit__ 統一清理
         return False
+
+    def _request_error(self, req_id):
+        """🤖 P6: 搵屬於呢個 request（按 bars.reqId 歸屬）嘅 fatal error event — 回傳最後一條 (ts, reqId, code, msg) 或 None。
+           Warning 唔會令 request 失敗：ib_async 將 2100-2200 分類為 warning（實測 2174 timezone deprecation），跳過。"""
+        if req_id is None:
+            return None
+        fatal = [e for e in self._error_log
+                 if e[1] == req_id and not (2100 <= int(e[2]) < 2200)]
+        return fatal[-1] if fatal else None
 
     def _normalize_kline(self,data,ktype):
         data = data.rename(columns={'date': 'time_key'})
@@ -105,29 +146,47 @@ class IBClient(BrokerBase):
 
         return market, symbol,exchange,currency
 
+    def resolve_symbol(self, code):
+        """🤖 P7 L0+L1+L2: canonical Futu code → IB-native form（純函數，唔打網絡）。
+           - L0 normalize（strip + upper）
+           - L1 config alias（ib.symbol_aliases — IB-only symbol / 用戶 shorthand，e.g. "MY.SPX": "SPX:IND"）
+           - L2 rule: 'X.YYmain'（Futu front-month futures convention）→ 'YY:FUT'（force FUTURE，_make_contract 解 dynamic front month）
+             注意：只喺剩餘部分非空先 strip — US.MAIN（真股票 ticker）唔好誤當 main contract"""
+        code = str(code).strip().upper()
+        if code in self._symbol_aliases:      # L1
+            return self._symbol_aliases[code]
+        symbol = code.split('.', 1)[1] if '.' in code else code
+        if symbol.endswith('MAIN') and len(symbol) > len('MAIN'):   # L2
+            return f"{symbol[:-len('MAIN')]}:FUT"
+        return code
+
     # 🤖 sec_type hint 接受短名（TWS wire format）或全名
     _SEC_TYPE_ALIASES = {'FUT': 'FUTURE', 'STK': 'STOCK', 'IND': 'INDEX'}
 
-    async def _resolve_contract(self, code, sec_type=None):
+    async def _resolve_contract(self, code, sec_type=None, index_first=False):
         """唔使 map：按順序試 FUTURE(逐交易所) → STOCK(SMART) → INDEX(逐交易所)，由 TWS reqContractDetails 判斷。
 
         sec_type 指定（FUT/STK/IND）就只試嗰種類型；回傳解析到嘅 contract
-        （exchange/currency 正確；期貨已帶 TWS 填好嘅 front month）。"""
+        （exchange/currency 正確；期貨已帶 TWS 填好嘅 front month）。
+        🤖 P7: index_first=True → INDEX 先於 FUTURE — canonical MARKET.SYMBOL（無 main）永遠唔係期貨語義
+        （HK.HSI=指數，唔係 HSI 期貨）；US.NQ leniency 保留（Index('NQ') 全部 fail 後 FUTURE 照解到）。"""
         code = code.strip().upper()
         if sec_type:
             sec_type = self._SEC_TYPE_ALIASES.get(sec_type.upper(), sec_type.upper())
-        cache_key = f"{code}:{sec_type or ''}"
+        cache_key = f"{code}:{sec_type or ''}{'-idx' if (index_first and not sec_type) else ''}"
         if cache_key in self._resolved:
             return self._resolved[cache_key]
 
+        type_order = [sec_type] if sec_type else (('INDEX', 'FUTURE') if index_first else ('FUTURE', 'STOCK', 'INDEX'))
         candidates = []
-        if sec_type in (None, 'FUTURE'):
-            candidates += [Future(symbol=code, lastTradeDateOrContractMonth='', exchange=ex, currency='USD')
-                           for ex in self.future_exchanges]
-        if sec_type in (None, 'STOCK'):
-            candidates.append(Stock(code, 'SMART', 'USD'))
-        if sec_type in (None, 'INDEX'):
-            candidates += [Index(code, ex, 'USD') for ex in self.index_exchanges]
+        for t in type_order:
+            if t == 'FUTURE':   # 🤖 P7 probe 實測（test/probe_ib_hsi.py）：(exchange, currency) 對 — SEHK/HKD 係 TWS 接受嘅 HK destination
+                candidates += [Future(symbol=code, lastTradeDateOrContractMonth='', exchange=ex, currency=ccy)
+                               for ex, ccy in self.future_exchanges]
+            elif t == 'STOCK':
+                candidates.append(Stock(code, 'SMART', 'USD'))
+            else:   # INDEX
+                candidates += [Index(code, ex, 'USD') for ex in self.index_exchanges]
 
         for c in candidates:
             try:
@@ -141,13 +200,25 @@ class IBClient(BrokerBase):
                 logger.info("[%s] 自動解析到 %s @ %s%s", code, resolved.secType, resolved.exchange, extra)
                 self._resolved[cache_key] = resolved
                 return resolved
-        raise ValueError(f"無法解析 {code}（試過: {sec_type or 'FUTURE/STOCK/INDEX'}）")
+        # 🤖 P6 error honesty：全部 candidate 都 fail — 由 _error_log 搵最近嘅 fatal error，將真正原因帶入 message
+        #    （如 Error 200 = 無 security definition / 無 permission），唔好只講「無法解析」令人以為係打錯 code
+        last_err = None
+        now = time.monotonic()
+        for ts, _req_id, err_code, err_msg in reversed(self._error_log):
+            if now - ts > 10:      # 🤖 只要最近 10s（呢次 resolve 期間產生）— 共享連線有其他 request 嘅舊 error
+                break
+            if not (2100 <= int(err_code) < 2200):   # warning band 唔算 fatal
+                last_err = _ib_error_text(err_code, err_msg)
+                break
+        hint = f"；最後錯誤: {last_err}" if last_err else ""
+        raise ValueError(f"無法解析 {code}（試過: {'/'.join(type_order)}{hint}）")
 
     async def _make_contract(self, code):
         """由 code 建立 contract：
            - 'MARKET.SYMBOL'（US.AAPL / HK.00700）→ 先試股票；唔係股票（如 US.NQ）就 fallback 自動解析
-           - 裸 symbol（ES / NQ / SPX）→ 自動解析 FUTURE/STOCK/INDEX；CODE:TYPE 可強制類型（ES:FUT）"""
-        code = code.strip()
+           - 裸 symbol（ES / NQ / SPX）→ 自動解析 FUTURE/STOCK/INDEX；CODE:TYPE 可強制類型（ES:FUT）
+           🤖 P7：先經 resolve_symbol（L0 normalize / L1 config alias / L2 'YYmain' → 'YY:FUT'）"""
+        code = self.resolve_symbol(code)
         sec_type = None
         if ':' in code:   # 🤖 CODE:TYPE 強制類型，同一代號多市場時用
             code, sec_type = code.split(':', 1)
@@ -166,7 +237,7 @@ class IBClient(BrokerBase):
                 self._resolved[key] = resolved
                 return resolved
             logger.info("[%s] %s 搵唔到股票，fallback 自動解析", code, exchange)
-            resolved = await self._resolve_contract(symbol, sec_type)   # 🤖 例如 US.NQ → NQ 期貨
+            resolved = await self._resolve_contract(symbol, sec_type, index_first=True)   # 🤖 P7: INDEX 先於 FUTURE — canonical code（無 main）唔係期貨語義；US.NQ leniency 保留
             self._resolved[key] = resolved   # 🤖 用完整 code cache — 否則每次呼叫都重新 probe Stock（stream_kline 會印第二次 fallback）
             return resolved
         return await self._resolve_contract(code, sec_type)
@@ -196,7 +267,9 @@ class IBClient(BrokerBase):
         """同 get_kline 一樣回傳 (status, data, message)：
            - status=True → data 係 async generator（第一次 yield = baseline，之後每筆 push = live tick）；
              consumer 用 `async for df in data` 消費，停止 = cancel task / .aclose()（finally 會拔線）
-           - status=False → data=None、message 係失敗原因（代號解析 / 歷史取數 / keepUpToDate 訂閱）"""
+           - status=False → data=None、message 係失敗原因（代號解析 / 歷史取數 / keepUpToDate 訂閱）
+           🤖 P6 fail-fast：setup 後有 3s explicit-error grace window — TWS 彈到 fatal error（按 reqId 歸屬，
+              warning 除外）即刻返 False；silent no-data account 等滿 3s 先入 stream，120s watchdog 仍係 backstop"""
         # 0️⃣ 確保共享連線已建立（冪等，8 條 stream 共用同一條）
         await self._ensure_connected()
         # 1️⃣ 先用 get_kline 取歷史 K 線做初始底表（HISTORY）— 失敗直接經 status/message 回報，唔會建 generator
@@ -222,8 +295,10 @@ class IBClient(BrokerBase):
             )
         except Exception as e:
             return False, None, f"IB stream_kline: keepUpToDate 訂閱失敗 {type(e).__name__}: {e}"
-        if not bars:   # 🤖 TWS timeout/error 時 ib_async 靜默回傳空 list（唔係 exception，logging 又被食）— 唔 guard 會永遠 hang 喺下面迴圈
-            return False, None, "IB stream_kline: keepUpToDate 無數據（TWS timeout/error）"
+        if not bars:   # 🤖 P6: TWS timeout/error → ib_async 靜默回傳空 list（唔係 exception）— 按 reqId 歸屬真正 error，唔再 generic message
+            err = self._request_error(getattr(bars, 'reqId', None))
+            why = _ib_error_text(err[2], err[3]) if err else '無回傳數據且無對應 TWS error event'
+            return False, None, f"IB stream_kline: keepUpToDate 無數據 — {why}"
 
         logger.info("IB stream_kline...")
 
@@ -261,6 +336,24 @@ class IBClient(BrokerBase):
 
         # 掛載監聽事件
         bars.updateEvent += on_bar_update
+
+        # 🤖 P6: explicit-error grace window（3s）— TWS permission/timeout error 喺 ~1s 內到（實測）；
+        #    呢個 account 係 silent no-data（無 RTUS 唔彈錯）所以會等滿 3s，第一筆 live bar 到就提前離開。
+        #    8 條 stream 並發 setup → 總成本 ~3s，唔係 8×3s。
+        deadline = time.monotonic() + 3.0
+        err = None
+        while time.monotonic() < deadline:
+            err = self._request_error(getattr(bars, 'reqId', None))
+            if err is not None or update_count > 0:
+                break
+            await asyncio.sleep(0.1)
+        if err is not None:
+            bars.updateEvent -= on_bar_update
+            try:
+                self.ib.cancelHistoricalData(bars)   # 🤖 拔走 TWS 端訂閱，唔留半訂閱狀態
+            except Exception:
+                pass
+            return False, None, f"IB stream_kline: {_ib_error_text(err[2], err[3])}"
 
         async def _stream():
             try:
@@ -321,11 +414,18 @@ class IBClient(BrokerBase):
                 whatToShow='TRADES',
                 useRTH=False  # 🤖 同 stream_kline 保持一致（含盤前盤後）
             )
+        except Exception as e:
+            return False, None, str(e)
+
+        if not bars:   # 🤖 P6: 空 list 唔再 generic message — 按 reqId 歸屬真正 TWS error（實測見 test/probe_ib_errors*.py）
+            err = self._request_error(getattr(bars, 'reqId', None))
+            why = _ib_error_text(err[2], err[3]) if err else '無回傳數據且無對應 TWS error event'
+            return False, None, f"IB get_kline: {why}"
+
+        try:
             data = util.df(bars).tail(kline_num).reset_index(drop=True)
         except Exception as e:
             return False, None, str(e)
-        if not bars:   # 🤖 TWS timeout/error → ib_async 靜默回傳空 list（唔係 exception）— 同 ib_futures_kline.py 一樣要 guard
-            return False, None, 'IB 無回傳數據（timeout 或 error，檢查代號/月份）'
 
         status=True
         data = self._normalize_kline(data, ktype)
