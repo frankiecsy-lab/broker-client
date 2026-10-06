@@ -6,6 +6,38 @@
 
 ## 2026-10-06
 
+### One Gate Page 1 K綫測試 — 嵌入 gui_kline 全部功能（takeCentralWidget，零改動 gui_kline.py）
+檔案：`gateway/pages/kline_page.py`（placeholder → 真頁）、`gateway/theme.py`（加 listener registry）
+
+- **嵌入模式**：建隱藏 top-level `gui_kline.MainWindow()` 並保留 Python 引用 alive（thread lifecycle 綁定喺個 instance）；`takeCentralWidget()` 搬入頁面 layout，QSS 喺**頁面層級**套用（reparent 之後 central widget 已唔係原 window descendant）。
+- **退出清理鏈**：`aboutToQuit` → `self._win.close()` — hidden top-level 一樣 deliver QCloseEvent → 跑原 closeEvent 完整條鏈（fetch wait(3000) → request_shutdown → thread.wait(3000）），idempotent。
+- **theme 傳播**：運行時重新指派 gui_kline 模組級 C_* 常數 + `inspect.getsource` 提取 QSS f-string statement 用新值 exec 重建（唔 copy template，源碼改咗自動跟住變）+ restyle 建檔時 bake 咗嘅 spots（figure facecolor / readout / panel btn·info / sym·time label / price color）+ `chart._redraw()`。C_UP/C_DOWN 紅漲/綠跌語義色跟 theme 不變。
+- **theme listener registry**（`gateway/theme.py`）：PySide6 6.11.2 **冇綁定** `QApplication.styleSheetChanged` → 改由 theme module 統一通知：`add_listener(fn)`，apply_theme 完成 setStyleSheet 後同步調用 `fn(name)`（callback 直接收 name 參數，避免 stale import binding）。
+- **i18n sync**：外殼三語切換 → 嵌入頁自己嘅語言 combo（繁中/EN；簡中 fallback 返繁中字串）。
+- **單獨運行**：`python gateway/pages/kline_page.py` → standalone window（模糊搜尋、get/stream 全部可用）。
+- **驗證**：in-process smoke 31/31 PASS（objectNames ×6、central taken、dark→light→dark theme 雙向 QSS/figure/baked-spot 顏色斷言、i18n sync 雙向、hermetic 3s pump thread 活緊 + 零 fetch thread、quit chain wait(6000) + idempotent、One Gate shell 入面嵌入頁 objectNames + nav 切換）；2 個入口點（gateway.py / kline_page.py standalone）offscreen sanity EXIT=124 無 traceback。
+
+### One Gate 外殼 — 多券商 gateway 匯合主窗口（頂部導航 + QStackedWidget + 三語 + 暗/淺色 theme）
+檔案：`gateway.py`（新）、`gateway/` package（新，9 檔）
+
+- **主入口** `python gateway.py`：thin launcher → `gateway/app.py::OneGateWindow`。頂部導航欄 = brand + 3 個 checkable nav 按鈕（`nav_kline` / `nav_fulltest` / `nav_connection`）+ disabled 預留位（`nav_reserved`，其餘頁面以後再加）+ 語言 combo + theme 按鈕；QStackedWidget（`page_stack`）切換三頁。
+- **組件化**：每頁係獨立組件（`gateway/pages/` kline / fulltest / connection，本 ticket 先 placeholder），每個檔底層都有 `if __name__ == '__main__':` → `run_standalone()` 單獨開視窗（帶自己嘅語言/theme 控制）；合體入外殼只係 PAGE_KEYS registry 一行。
+- **i18n 單一入口**（`gateway/i18n.py`）：STRINGS dict + `t(key, lang)`，支援 zh_hk / zh_cn / en — 三語全部明確字串（唔係 opencc 轉換）；unknown key 即刻 KeyError（fail-fast）。外殼全部文字（window title、nav、預留位 tooltip、語言 label、theme 按鈕）跟隨切換。
+- **theme 模組**（`gateway/theme.py`）：dark = gui_kline 現有配色（#1E1F22 / #26282C / accent #F1553B…）、light = 新專業 palette（#E8EAED / #FFFFFF / accent #E5492F）；QSS 由 string.Template 統一生成，一鍵切換即時生效。
+- **QSS scoping**：全部規則用 `[og="..."]` property selector + objectName — 之後 #03/#04 嵌入 gui_kline / gui_fulltest 時，佢哋程式化設定嘅顏色唔會俾 app-level QSS 覆蓋。
+- **純新增**：test/ 同 modules/ 零改動。
+- **驗證**：in-process smoke 87/87 PASS（objectNames ×13、nav exclusive 切換、三語 retranslate、theme 雙向 toggle + QSS 斷言、3 頁 standalone window）；4 個入口點 offscreen subprocess sanity 全部 EXIT=124（活到俾 kill = 無 startup crash）、log 零 traceback。
+
+### 綜合測試矩陣 GUI — broker 分區 + 隱藏 EXPECTED FAIL toggle + 數據表時間反向排序 + 串流 UPDATE 核實（用戶實測後改）
+檔案：`test/gui_fulltest.py`、E2E `test/e2e_gui_fulltest.py`
+
+- **Broker 分區更明顯**（用戶要求「不同BROKER 的TEST 要分區更明顯」）：table 加 2 條 section header row（`▍FUTU · 富途 OpenD — 11 tests` / `▍IB · Interactive Brokers (TWS/Gateway) — 7 tests`），col 0 `setSpan(1, 8)` 橫跨全欄、粗體 +2pt、futu/ib 各用獨立底色（#2f4858 / #5d4178）；table 由 18 rows → **20 rows**，`_test_to_row` / `_row_to_test` mapping 令 worker signal handler 完全唔使改。
+- **隱藏 EXPECTED FAIL toggle**（用戶要求「右上角加上按鍵切換是否隱蔵EXPECTED FAIL」）：toolbar checkable 按鈕 `hide_expected_fail` — **display-only**：只 `setRowHidden(expect=False rows)`，Run All / Stop / 單行 ▶ 邏輯完全唔受影響（E2E monkeypatch enqueue 驗證隱藏狀態下 Run All 仍然 enqueue 全部 18）。
+- **結果數據表按時間反向排序**（用戶要求「結果的DF 要按時間反向排序」）：`_fill_data_table` 改 `df.tail(50).iloc[::-1]` — 最新 bar 喺第一行（仍係最後 50 rows）。
+- **串流 UPDATE 核實結論**（用戶反映「串流的UPDATE 好像不對没有串流」）：**pipeline 無 bug**。結果 cell 係 static text by design（跑完先寫 `snapshots=N live_updates=M`，冇 live tick 顯示）；`live_updates=0` 可能係無成交時段 / IB 無 RTUS。開市時 live Run All 實測：3 條 futu stream 全部 `snapshots=2 live_updates=1`（tick 有流就有 update）。n≤1 時 detail 加 hint「5s 內無新 tick — 可能係無成交時段 / IB 無 RTUS；baseline 已收到即算成功」。
+- **E2E fix**：PySide6 6.11.2 冇綁定 `spanAt()`（`Qt.ItemDataRole.SpanRole` enum 都唔存在）→ 改斷言 `(rowSpan(r,0), columnSpan(r,0)) == (1, 8)`。
+- **驗證**：E2E `test/e2e_gui_fulltest.py` 39/39 PASS EXIT=0（含 section span、hide_ef display-only、newest-first）；live Run All（OpenD + TWS 雙開）**pass=10 / expected_fail=8 / fail=0**，同 baseline 完全一致（34.8s）。
+
 ### 綜合測試矩陣 GUI — Run All 全並發 + 參數拆多欄（用戶實測後改）
 檔案：`test/gui_fulltest.py`、E2E `test/e2e_gui_fulltest.py`
 

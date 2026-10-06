@@ -1,9 +1,11 @@
 """綜合測試 GUI（矩陣）：一行一個測試，三欄 [測試 | 參數 | 結果]，全部 broker × 標的類別 × 方式 × 市場。
 
 - 無輸入欄位：參數拆多欄顯示（code / market / ktype / num / broker / method）
+- Broker 分區：每個 broker 一段，段首有橫跨全欄嘅 header row（setSpan），futu / ib 一眼分清
+- 右上角「隱藏 EXPECTED FAIL」toggle：只影響顯示（setRowHidden），Run All 仍然跑全部 rows
 - 每行可獨立跑（▶ 或雙擊該行）；Run All = **全部同時並發**（futu 各開獨立 OpenD 連線；IB 共用一條 TWS session、多 reqId 並行，per-request error 歸屬靠 bars.reqId）
 - Stop = cancel 所有運行中 + 清理所有結果（重新開始）
-- 成功嘅行：「▸ 數據」按鈕拆開顯示返回嘅 K 線（mini table，最後 50 rows，可 scroll）
+- 成功嘅行：「▸ 數據」按鈕拆開顯示返回嘅 K 線（mini table，最後 50 rows、按時間反向排序 — 最新 bar 喺第一行，可 scroll）
 - 結果語義：✅ PASS / ⚠️ EXPECTED FAIL（預期嘅誠實失敗，例如無 permission）/ ❌ FAIL / ℹ️ 未驗證（只顯示實際結果）
 - stream 行用 5s window：第一次 yield = 歷史 baseline（判斷標準），之後 = live tick（0 筆唔算 fail — 可能冇成交時段）
 - worker thread 擁有一個 app-lifetime BrokerClient；closeEvent 釋放 IB clientId=99
@@ -72,6 +74,12 @@ TESTS = [
          name='港股指數期貨主連 · 歷史 K 線 (IB)', intro='無 HK derivatives permission → 無法解析 + 最後錯誤 hint；contract test case', expect=False, must_contain='無法解析'),
     dict(broker='ib', method='get_kline', code='US.NONEXIST123', ktype='K_1M',
          name='唔存在代號 · 誠實失敗路徑 (IB)', intro='Error 200 = 唔存在或無 permission；message 應該帶 TWS 原文 hint', expect=False, must_contain='無法解析'),
+]
+
+# ── Broker 分區：table 入面每個 broker 一段，段首有橫跨全欄嘅 header row（setSpan）──
+BROKER_SECTIONS = [
+    ('futu', 'FUTU · 富途 OpenD'),
+    ('ib',   'IB · Interactive Brokers (TWS/Gateway)'),
 ]
 
 # state → (顯示 label, 顏色)：expected_fail 係橙色（預期內嘅誠實失敗），fail 先係紅色
@@ -189,6 +197,8 @@ class TestWorker(QObject):
                     if n >= 1:
                         # 🤖 第一次 yield = baseline（歷史底表）— 收到就算成功；live tick 0 筆唔算 fail
                         ok, detail = True, f"snapshots={n}  live_updates={max(0, n - 1)}"
+                        if n <= 1:   # 🤖 澄清：window 內無新 tick 多數係時段/權限問題，唔代表串流壞
+                            detail += "（5s 內無新 tick — 可能係無成交時段 / IB 無 RTUS；baseline 已收到即算成功）"
                         data = last_df   # 🤖 最後一份 snapshot（最新數據）俾拆疊 table 顯示
                     else:
                         ok, detail = False, "setup 成功但 window 內冇收到任何數據（baseline 缺失）"
@@ -366,10 +376,17 @@ class MainWindow(QMainWindow):
         bar.addStretch(1)
         bar.addWidget(self.progress_lbl)
         bar.addWidget(self.summary_lbl)
+        self.hide_ef_btn = QPushButton("隱藏 EXPECTED FAIL")
+        self.hide_ef_btn.setObjectName('hide_expected_fail')
+        self.hide_ef_btn.setCheckable(True)   # 🤖 display-only toggle：setRowHidden，唔影響 Run All 跑全部 rows
+        self.hide_ef_btn.toggled.connect(self._on_toggle_hide_ef)
+        bar.addWidget(self.hide_ef_btn)
         v.addLayout(bar)
 
-        # ── 八欄 table：測試 | code | market | ktype | num | broker | method | 結果（參數拆多欄，清晰）──
-        self.table = QTableWidget(len(TESTS), 8)
+        # ── 八欄 table + broker 分區 header rows：測試 | code | market | ktype | num | broker | method | 結果 ──
+        self._test_to_row = [None] * len(TESTS)   # 🤖 test idx → table row（中間插咗 section headers）
+        self._row_to_test = {}                    # 🤖 table row → test idx（header rows 唔喺入面）
+        self.table = QTableWidget(len(TESTS) + len(BROKER_SECTIONS), 8)
         self.table.setHorizontalHeaderLabels(["測試", "code", "market", "ktype", "num", "broker", "method", "結果"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -379,9 +396,18 @@ class MainWindow(QMainWindow):
             hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(7, QHeaderView.Stretch)
         self.table.setColumnWidth(0, 340)
-        for i, spec in enumerate(TESTS):
-            self._build_row(i, spec)
-        self.table.cellDoubleClicked.connect(lambda r, _c: self.run_row(r))   # 🤖 雙擊該行 = 獨立測試
+        r = 0
+        for broker_key, title in BROKER_SECTIONS:   # 🤖 每段：header row（setSpan 橫跨全欄）+ 該 broker 嘅 test rows
+            self._build_section_header(r, broker_key, title)
+            r += 1
+            for i, spec in enumerate(TESTS):
+                if spec['broker'] != broker_key:
+                    continue
+                self._test_to_row[i] = r
+                self._row_to_test[r] = i
+                self._build_test_row(r, i, spec)
+                r += 1
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)   # 🤖 雙擊 test row = 獨立測試（header row ignore）
         v.addWidget(self.table)
         self.setCentralWidget(central)
 
@@ -389,7 +415,23 @@ class MainWindow(QMainWindow):
         self.thread.worker_ready.connect(self._on_worker_ready)
         self.thread.start()
 
-    def _build_row(self, i: int, spec: dict):
+    def _build_section_header(self, r: int, broker_key: str, title: str):
+        """Broker 分區 header row：橫跨全欄（setSpan），一眼分清 futu / ib 兩段。"""
+        n = sum(1 for s in TESTS if s['broker'] == broker_key)
+        it = QTableWidgetItem(f"▍{title} — {n} tests")
+        f = it.font()
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 2)
+        it.setFont(f)
+        bg = '#2f4858' if broker_key == 'futu' else '#5d4178'   # 🤖 深色系：淺/暗 table background 都清晰
+        it.setBackground(QColor(bg))
+        it.setForeground(QColor(255, 255, 255))
+        self.table.setItem(r, 0, it)
+        self.table.setSpan(r, 0, 1, 8)   # 🤖 橫跨全部 8 欄
+        self.table.setRowHeight(r, 34)
+
+    def _build_test_row(self, r: int, i: int, spec: dict):
+        """r = table row（計入 section headers），i = test idx（TESTS 順序，signal 用）。"""
         # col 0：▶ 按鈕 + 名稱/簡介（cell widget）
         cell = QWidget()
         h = QHBoxLayout(cell)
@@ -403,7 +445,7 @@ class MainWindow(QMainWindow):
         lbl.setTextFormat(Qt.RichText)
         h.addWidget(btn)
         h.addWidget(lbl, 1)
-        self.table.setCellWidget(i, 0, cell)
+        self.table.setCellWidget(r, 0, cell)
         self._row_btns.append(btn)
 
         # cols 1-6：參數拆多欄（純顯示文字；stream window 資訊喺 col 0 intro 已有）
@@ -411,7 +453,7 @@ class MainWindow(QMainWindow):
         for c, val in enumerate((spec['code'], market, spec['ktype'], str(KLINE_NUM),
                                  spec['broker'], spec['method']), start=1):
             it = QTableWidgetItem(val)
-            self.table.setItem(i, c, it)
+            self.table.setItem(r, c, it)
 
         # col 7：結果 cell widget = [結果文字] + [▸ 數據拆疊按鈕] + [mini K 線 table]
         rcell = QWidget()
@@ -431,7 +473,7 @@ class MainWindow(QMainWindow):
         rv.addWidget(res_lbl)
         rv.addWidget(data_btn, 0, Qt.AlignLeft)
         rv.addWidget(data_tbl)
-        self.table.setCellWidget(i, 7, rcell)
+        self.table.setCellWidget(r, 7, rcell)
         self._res_labels.append(res_lbl)
         self._data_btns.append(data_btn)
         self._data_tables.append(data_tbl)
@@ -462,6 +504,18 @@ class MainWindow(QMainWindow):
         self._inflight.update(idxs)
         self.progress_lbl.setText(f"全測 {len(idxs)} 個測試…")
         self._worker.enqueue(idxs)
+
+    def _on_cell_double_clicked(self, r: int, _c: int):
+        i = self._row_to_test.get(r)   # 🤖 section header row 冇 mapping → ignore
+        if i is not None:
+            self.run_row(i)
+
+    def _on_toggle_hide_ef(self, hide: bool):
+        """右上角 toggle：隱藏/顯示 EXPECTED FAIL rows（display-only — Run All 仍然跑全部）。"""
+        for i, spec in enumerate(TESTS):
+            if spec['expect'] is False:
+                self.table.setRowHidden(self._test_to_row[i], hide)
+        self.hide_ef_btn.setText("顯示 EXPECTED FAIL" if hide else "隱藏 EXPECTED FAIL")
 
     def stop(self):
         if self._worker is not None:
@@ -519,8 +573,8 @@ class MainWindow(QMainWindow):
         self.table.resizeRowsToContents()
 
     def _fill_data_table(self, i: int, df):
-        """mini table：最後 50 rows（1000 bars 全顯示會太長），內部 scroll。"""
-        show = df.tail(50)
+        """mini table：最後 50 rows、按時間反向排序（最新 bar 喺第一行），內部 scroll。"""
+        show = df.tail(50).iloc[::-1].reset_index(drop=True)   # 🤖 newest first
         tbl = self._data_tables[i]
         tbl.clear()
         cols = [str(c) for c in show.columns]

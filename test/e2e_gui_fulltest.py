@@ -61,16 +61,49 @@ pump(0.5)
 # ── structure ──
 check("maximized", win.isMaximized())
 t = win.table
-check("table shape 8-col", t.rowCount() == len(gui_fulltest.TESTS) and t.columnCount() == 8,
-      f"rows={t.rowCount()} cols={t.columnCount()}")
+check("table shape 8-col", t.rowCount() == len(gui_fulltest.TESTS) + len(gui_fulltest.BROKER_SECTIONS)
+      and t.columnCount() == 8, f"rows={t.rowCount()} cols={t.columnCount()}")
 hdrs = [t.horizontalHeaderItem(c).text() for c in range(t.columnCount())] if t.columnCount() else []
 check("param columns split", hdrs[:7] == ["測試", "code", "market", "ktype", "num", "broker", "method"], str(hdrs))
+# 🤖 broker 分區：每段一個 header row（col 0 有 ▍ 文字 + setSpan 橫跨全欄）
+hdr_rows = [r for r in range(t.rowCount()) if t.item(r, 0) is not None and t.item(r, 0).text().startswith("▍")]
+check("section headers count", len(hdr_rows) == len(gui_fulltest.BROKER_SECTIONS), f"rows={hdr_rows}")
+for r, (_bk, title) in zip(hdr_rows, gui_fulltest.BROKER_SECTIONS):
+    check(f"header text {title.split(' · ')[0]}", title.split(' · ')[0] in t.item(r, 0).text(),
+          str(t.item(r, 0).text()))
+    # 🤖 PySide6 冇綁定 spanAt() — 用 rowSpan()/columnSpan() 讀返 setSpan(1, 8)
+    check(f"header span row{r}", (t.rowSpan(r, 0), t.columnSpan(r, 0)) == (1, 8),
+          f"rowSpan={t.rowSpan(r, 0)} colSpan={t.columnSpan(r, 0)}")
+# 🤖 row mapping：每個 test idx → 唯一非 header table row
+check("row mapping complete", all(win._test_to_row[i] is not None for i in range(len(gui_fulltest.TESTS)))
+      and len(set(win._test_to_row)) == len(gui_fulltest.TESTS)
+      and all(r not in hdr_rows for r in win._test_to_row))
 check("no input fields", len(t.findChildren(QLineEdit)) == 0
       and len(win.centralWidget().findChildren(QSpinBox)) == 0)
 check("objectNames", win.run_all_btn.objectName() == 'run_all'
       and win.stop_btn.objectName() == 'stop'
       and win.progress_lbl.objectName() == 'progress'
       and win.summary_lbl.objectName() == 'summary')
+
+# 🤖 隱藏 EXPECTED FAIL toggle：display-only — 只隱 expect=False rows，Run All 仍然 enqueue 全部 18
+check("hide_ef btn", win.hide_ef_btn.objectName() == 'hide_expected_fail' and win.hide_ef_btn.isCheckable())
+win.hide_ef_btn.click()   # toggle ON → hide expected-fail rows
+pump(0.2)
+hidden_ok = all(t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is False)
+visible_ok = all(not t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is not False)
+check("hide_ef hides expected-fail rows only", hidden_ok and visible_ok)
+captured = []
+orig_enqueue = win._worker.enqueue
+win._worker.enqueue = lambda idxs: captured.append(list(idxs))
+try:
+    win.run_all_btn.click()
+    pump(0.2)
+finally:
+    win._worker.enqueue = orig_enqueue
+check("run all unaffected by hidden rows", len(captured) == 1 and captured[0] == list(range(len(gui_fulltest.TESTS))))
+win._inflight.clear()
+win.hide_ef_btn.click()   # toggle back OFF
+pump(0.2)
 
 
 def find_row(broker, method, code):
@@ -106,6 +139,11 @@ pump(0.2)
 hdrs = [dtbl.horizontalHeaderItem(c).text() for c in range(dtbl.columnCount())] if dtbl.columnCount() else []
 check("data table expanded", dtbl.isVisible() and 0 < dtbl.rowCount() <= 50, f"rows={dtbl.rowCount()}")
 check("data headers sane", 'time_key' in hdrs and 'close' in hdrs, str(hdrs))
+# 🤖 按時間反向排序：最新 bar 喺第一行（ISO time_key 字串比較有效）
+tk_col = hdrs.index('time_key')
+first_tk = dtbl.item(0, tk_col).text()
+last_tk = dtbl.item(dtbl.rowCount()-1, tk_col).text()
+check("data table newest-first", first_tk >= last_tk, f"first={first_tk} last={last_tk}")
 dbtn.click()
 pump(0.2)
 check("data table collapsed again", not dtbl.isVisible())
