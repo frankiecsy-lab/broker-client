@@ -24,6 +24,7 @@ pip install -r requirements.txt
 | 入口 | 用途 |
 |---|---|
 | `python gateway.py` | **One Gate** 主窗口：三頁導航（K綫 / 全功能 / 連綫）+ 三語 + 暗/淺色 theme |
+| `OneGate.bat`（雙擊） | Windows launcher，等同 `python gateway.py`（防手滑指住資料夾跑） |
 | `python test/gui_kline.py` | 主 GUI：模糊搜尋標的 + get/stream K 線 + i18n + FETCH |
 | `python test/gui_fulltest.py` | 綜合測試矩陣（全並發 Run All） |
 | `python test/cli_kline.py` | CLI 取數 + contract / mapping regression tests |
@@ -44,6 +45,7 @@ pip install -r requirements.txt
 - `modules/symbol_index.json` - **[symbol index cache]**：gitignored，由 symbol_search fetch 寫入（~3.7MB）。
 - `modules/config.json` - **[運行配置]**：host/port、kline_num、source 預設 broker、ib.symbol_aliases。
 - `gateway.py` - **[One Gate 主入口（thin launcher）]**：`python gateway.py` → `gateway/app.py::main()`；同同名 `gateway/` package 安全共存（CPython FileFinder 先查目錄）。依賴：gateway.app。
+- `OneGate.bat` - **[Windows 雙擊 launcher]**：等同 `python gateway.py`（防手滑指住資料夾跑報錯）。
 - `gateway/__init__.py` - **[package 入口]**：版本號 + 用法說明，無重 import。
 - `gateway/i18n.py` - **[三語 i18n 單一入口]**：STRINGS dict（zh_hk/zh_cn/en 明確字串）+ `t()` fail-fast + theme 按鈕文字 helper。無依賴。
 - `gateway/theme.py` - **[theme QSS 中央生成]**：dark（= gui_kline 配色）/ light palette + string.Template QSS；`apply_theme()` 一鍵切換 + listener registry（`add_listener(fn)`，嵌入頁跟隨 theme）。依賴：PySide6（lazy import）。
