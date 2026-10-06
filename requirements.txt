@@ -1,4 +1,4 @@
-# broker_client / One Gate 依賴清單（匯合自全專案 import 分析，版本 = 實測環境 pin）
+# broker_client / One Gate 依賴清單（匯合自全專案 import 分析，版本 = 實測環境 pin；cp312/cp314 雙 wheel 兼容）
 # 安裝：pip install -r requirements.txt
 
 # ── GUI framework ────────────────────────────────────────────────
@@ -6,8 +6,8 @@ PySide6==6.11.2            # gateway/* + test/gui_*.py（Essentials/Addons/shibo
 
 # ── Data / charting ──────────────────────────────────────────────
 pandas==3.0.2              # modules/* K 線 DataFrame（broker/futu_client/ib_client/kline_schema）
-numpy==1.26.4              # test/gui_kline.py 圖表數值運算
-matplotlib==3.10.1         # K 線圖渲染 — backend_qtagg 嵌入 PySide6（test/gui_kline.py）
+numpy==2.5.3               # test/gui_kline.py 圖表數值運算（1.26.x 冇 cp314 wheel → sdist build fail；2.5.3 = 最新有 cp314 win_amd64 wheel）
+matplotlib==3.11.2         # K 線圖渲染 — backend_qtagg 嵌入 PySide6（test/gui_kline.py）（3.10.x 冇 cp314 wheel；3.11.2 = 最新有 cp314 win_amd64 wheel）
 
 # ── Broker SDKs ──────────────────────────────────────────────────
 futu-api==10.5.6508        # Futu OpenD SDK（import futu；modules/futu_client、symbol_search、Page 3 probe）

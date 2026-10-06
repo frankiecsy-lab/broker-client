@@ -7,7 +7,7 @@
 - Stop = cancel 所有運行中 + 清理所有結果（重新開始）
 - 成功嘅行：「▸ 數據」按鈕拆開顯示返回嘅 K 線（mini table，最後 50 rows、按時間反向排序 — 最新 bar 喺第一行，可 scroll）
 - 結果語義：✅ PASS / ⚠️ EXPECTED FAIL（預期嘅誠實失敗，例如無 permission）/ ❌ FAIL / ℹ️ 未驗證（只顯示實際結果）
-- stream 行用 5s window：第一次 yield = 歷史 baseline（判斷標準），之後 = live tick（0 筆唔算 fail — 可能冇成交時段）
+- stream 行持續 live：第一次 yield = 歷史 baseline（收到 → 即刻出 verdict ✅ PASS），之後 live tick 持續更新結果格 + 數據表，到 Stop / 重跑為止（0 tick 唔算 fail — 可能冇成交時段 / IB 無 RTUS）
 - worker thread 擁有一個 app-lifetime BrokerClient；closeEvent 釋放 IB clientId=99
 
 Run: python test/gui_fulltest.py   （需要 OpenD + TWS/IB Gateway 開緊）
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QLa
 from modules import BrokerClient   # 🤖 registry：config 入面所有 broker（futu/ib）自動 instantiate，lazy connect
 
 KLINE_NUM = 1000
-STREAM_SECONDS = 5
+TICK_UI_INTERVAL = 0.25   # 🤖 live tick 數據表 repaint throttle（秒）；label 文字每 tick 都更新
 
 # ── 測試矩陣 ────────────────────────────────────────────────────────────────
 # expect: True=應該成功 / False=預期誠實失敗（message 必須非空，可加 must_contain 斷言）/ None=未驗證，只顯示實際結果
@@ -40,11 +40,11 @@ TESTS = [
     dict(broker='futu', method='get_kline', code='US.NVDA', ktype='K_1M',
          name='美股 · 歷史 K 線', intro='NVDA 1 分鐘 × 1000 bars；contract test 已驗證 PASS', expect=True),
     dict(broker='futu', method='stream_kline', code='US.NVDA', ktype='K_1M',
-         name='美股 · 串流 K 線', intro=f'{STREAM_SECONDS}s window：第一次 yield = 歷史 baseline（判斷標準），之後 = live tick（冇成交時段可以係 0）', expect=True),
+         name='美股 · 串流 K 線', intro='持續 live：第一次 yield = 歷史 baseline（收到即 PASS），之後 live tick 持續更新到 Stop', expect=True),
     dict(broker='futu', method='get_kline', code='HK.00700', ktype='K_1M',
          name='港股 · 歷史 K 線', intro='騰訊 1 分鐘 × 1000 bars；probe 實測 rows=100', expect=True),
     dict(broker='futu', method='stream_kline', code='HK.00700', ktype='K_1M',
-         name='港股 · 串流 K 線', intro=f'{STREAM_SECONDS}s window；probe 實測 snapshots=4 baseline=yes', expect=True),
+         name='港股 · 串流 K 線', intro='持續 live（probe 實測 baseline + tick 有流）；baseline 收到即 PASS，live_updates 計到 Stop', expect=True),
     dict(broker='futu', method='get_kline', code='US.NQmain', ktype='K_1M',
          name='美股期貨主連 · 歷史 K 線', intro='NQmain → front month；本 account 無美股期貨行情權限（預期誠實失敗）', expect=False, must_contain='行情权限不足'),
     dict(broker='futu', method='stream_kline', code='US.NQmain', ktype='K_1M',
@@ -56,14 +56,14 @@ TESTS = [
     dict(broker='futu', method='get_kline', code='HK.HSImain', ktype='K_1M',
          name='港股指數期貨主連 · 歷史 K 線', intro='HSI front month 期貨；canonical code，P7 已驗證 rows=1000', expect=True),
     dict(broker='futu', method='stream_kline', code='HK.HSImain', ktype='K_1M',
-         name='港股指數期貨主連 · 串流 K 線', intro=f'{STREAM_SECONDS}s window；probe 實測 snapshots=3 baseline=yes', expect=True),
+         name='港股指數期貨主連 · 串流 K 線', intro='持續 live（probe 實測 baseline=yes）；baseline 收到即 PASS，live_updates 計到 Stop（冇成交時段可以係 0）', expect=True),
     dict(broker='futu', method='get_kline', code='US.NONEXIST123', ktype='K_1M',
          name='唔存在代號 · 誠實失敗路徑', intro='應該返 status=False + 明確 message，唔好 hang 或 crash', expect=False),
     # ── IB ──
     dict(broker='ib', method='get_kline', code='US.NVDA', ktype='K_1M',
          name='美股 · 歷史 K 線 (IB)', intro='reqHistoricalData 1 分鐘 × 1000 bars；contract test 已驗證 PASS', expect=True),
     dict(broker='ib', method='stream_kline', code='US.NVDA', ktype='K_1M',
-         name='美股 · 串流 K 線 (IB)', intro=f'{STREAM_SECONDS}s window；本 account 無 RTUS → live update 可以係 0，以 baseline 為準', expect=True),
+         name='美股 · 串流 K 線 (IB)', intro='持續 live；本 account 無 RTUS → live_updates 可以長期係 0，baseline 收到即 PASS', expect=True),
     dict(broker='ib', method='get_kline', code='HK.00700', ktype='K_1M',
          name='港股 · 歷史 K 線 (IB)', intro='SEHK 00700；probe 實測 rows=100', expect=True),
     dict(broker='ib', method='get_kline', code='US.NQmain', ktype='K_1M',
@@ -103,7 +103,8 @@ class TestWorker(QObject):
     """
 
     row_started = Signal(int)
-    row_done = Signal(int, object)   # (idx, {'state', 'detail'[, 'data']})
+    row_done = Signal(int, object)   # (idx, {'state', 'detail'[, 'data'][, 'tick_token']})
+    stream_tick = Signal(int, int, object)   # 🤖 (idx, tick_token, {'n', 'df'}) — live tick 持續更新（自動 queue 去 GUI thread）
     run_finished = Signal(object)    # summary dict（本 batch 全部行完成先 emit）
     stopped = Signal()               # Stop cleanup 完成（GUI 再清一次，catch 任何 late paint）
 
@@ -114,6 +115,8 @@ class TestWorker(QObject):
         self._client_lock = asyncio.Lock()   # 🤖 並發首調 ensure_client 序列化 — IB clientId=99 只可以有一條連線
         self._row_tasks: set[asyncio.Task] = set()      # 🤖 Run All = 每行一個 task 同時跑
         self._consume_tasks: set[asyncio.Task] = set()  # stream consume tasks（多條 stream 可並發）
+        self._live_tasks: dict[int, asyncio.Task] = {}  # 🤖 idx → live stream consume task（持續到 Stop / 重跑該行）
+        self._next_tick_token = 0    # 🤖 monotonic tick token：GUI 用嚟作廢舊 run 嘅 stale tick
         self._shutting_down = False
         self._pending = 0              # 未完成 row 數 → 歸零先 emit run_finished
         self._results: dict[int, dict] = {}
@@ -177,6 +180,7 @@ class TestWorker(QObject):
         spec = TESTS[idx]
         self.row_started.emit(idx)
         data = None   # 🤖 成功返回嘅 K 線 df（GUI 拆疊顯示用）；失敗行保持 None
+        tick_token = None   # 🤖 live stream row 嘅 token（GUI 驗證後續 tick 用）
         try:
             client = await self.ensure_client()
             if spec['method'] == 'get_kline':
@@ -193,15 +197,9 @@ class TestWorker(QObject):
                 if not status or gen is None:
                     ok, detail = False, str(message) if message else "stream 啟動失敗但冇返錯誤 message"
                 else:
-                    n, last_df = await self._bounded_consume(gen)
-                    if n >= 1:
-                        # 🤖 第一次 yield = baseline（歷史底表）— 收到就算成功；live tick 0 筆唔算 fail
-                        ok, detail = True, f"snapshots={n}  live_updates={max(0, n - 1)}"
-                        if n <= 1:   # 🤖 澄清：window 內無新 tick 多數係時段/權限問題，唔代表串流壞
-                            detail += "（5s 內無新 tick — 可能係無成交時段 / IB 無 RTUS；baseline 已收到即算成功）"
-                        data = last_df   # 🤖 最後一份 snapshot（最新數據）俾拆疊 table 顯示
-                    else:
-                        ok, detail = False, "setup 成功但 window 內冇收到任何數據（baseline 缺失）"
+                    tick_token, first_df = await self._start_live(idx, gen)   # 🤖 baseline 收到 → 即刻出 verdict；live tick 背景持續
+                    ok, detail = True, "snapshots=1  live_updates=0（live 串流中…）"
+                    data = first_df    # 🤖 baseline df 俾拆疊 table 顯示；後續 tick 經 stream_tick signal 更新
         except asyncio.CancelledError:
             raise   # 🤖 保留取消語義：shutdown / Stop 先可以正確結束
         except Exception as e:
@@ -225,32 +223,63 @@ class TestWorker(QObject):
         res = {'state': state, 'detail': detail}
         if data is not None:
             res['data'] = data
+        if tick_token is not None:
+            res['tick_token'] = tick_token   # 🤖 GUI 記錄做 live tick 驗證（作廢舊 run 嘅 stale tick）
         return res
 
-    async def _bounded_consume(self, gen):
-        """食 STREAM_SECONDS 秒就 cancel — 同 cli_kline._bounded_consume；驗證 generator 乾淨 teardown。"""
+    async def _start_live(self, idx: int, gen):
+        """持續 live consume：第一次 yield = baseline（等佢到先 return），之後每 tick emit stream_tick。
+
+        task 持續跑到 Stop / shutdown cancel 或重跑同一行；token 俾 GUI 作廢舊 run 嘅 stale tick。
+        """
+        old = self._live_tasks.get(idx)   # 🤖 重跑同一行：先 cancel 舊 live task 並等佢 broker cleanup 完成
+        if old is not None and not old.done():
+            old.cancel()
+            await asyncio.gather(old, return_exceptions=True)   # cancelled task 嘅 CancelledError 被收集，唔會 propagate
+
+        token = self._next_tick_token
+        self._next_tick_token += 1
+
+        first_df = None
+        ready = asyncio.Event()
         n = 0
-        last_df = None
 
         async def consume():
-            nonlocal n, last_df
-            async for df in gen:
-                n += 1
-                last_df = df   # 🤖 留返最新一份 snapshot（GUI 拆疊顯示用）
+            nonlocal first_df, n
+            try:
+                async for df in gen:
+                    n += 1
+                    if n == 1:
+                        first_df = df     # 🤖 baseline — 喚醒等待者
+                        ready.set()
+                    else:
+                        self.stream_tick.emit(idx, token, {'n': n, 'df': df})   # 🤖 live tick → GUI（自動 queue）
+            except asyncio.CancelledError:
+                raise
 
         task = asyncio.create_task(consume())
-        self._consume_tasks.add(task)   # 🤖 set：多條 stream 可以並發 consume
+        self._consume_tasks.add(task)     # 🤖 Stop / shutdown 嘅 _cancel_all 一樣覆蓋到
+        self._live_tasks[idx] = task
+
+        def _cleanup(t, idx=idx):
+            self._consume_tasks.discard(t)
+            if self._live_tasks.get(idx) is t:   # 🤖 只移除仍然係當前嗰個（新 run 可能已取代）
+                del self._live_tasks[idx]
+
+        task.add_done_callback(_cleanup)
         try:
-            await asyncio.sleep(STREAM_SECONDS)
-        finally:
+            await asyncio.wait_for(ready.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
             if not task.done():
                 task.cancel()
-            try:
-                await task   # 等 broker 端清理（IB updateEvent / Futu ctx.close）完成先算數
-            except BaseException:
-                pass
-            self._consume_tasks.discard(task)
-        return n, last_df
+            await asyncio.gather(task, return_exceptions=True)   # 等 broker 端清理完成
+            raise TimeoutError("setup 成功但 30s 內冇收到 baseline") from None
+        except asyncio.CancelledError:   # 🤖 Stop 喺等 baseline 期間到 → 連新開嘅 consume task 都要 cancel（防 OpenD 連線漏）
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        return token, first_df
 
     def _summary(self):
         s = {'pass': 0, 'expected_fail': 0, 'fail': 0, 'info': 0}
@@ -353,6 +382,9 @@ class MainWindow(QMainWindow):
         self._res_labels: list[QLabel] = []      # 🤖 col 2 cell widget：結果文字
         self._data_btns: list[QPushButton] = []   # 「▸ 數據」拆疊按鈕（成功行先顯示）
         self._data_tables: list[QTableWidget] = []  # mini K 線 table（最後 50 rows）
+        self._row_state: dict[int, str] = {}         # 🤖 每行最新 state（live tick repaint 用對應顏色）
+        self._tick_gen: dict[int, int] = {}          # 🤖 idx → 當前 live stream token（作廢舊 run / Stop 後嘅 stale tick）
+        self._last_tick_paint: dict[int, float] = {}  # 🤖 數據表 repaint throttle 時間戳（TICK_UI_INTERVAL）
 
         central = QWidget(self)
         v = QVBoxLayout(central)
@@ -486,6 +518,7 @@ class MainWindow(QMainWindow):
         self.progress_lbl.setText("Ready")
         worker.row_started.connect(self._on_row_started)
         worker.row_done.connect(self._on_row_done)
+        worker.stream_tick.connect(self._on_stream_tick)   # 🤖 live tick → 即時更新結果格 + 數據表
         worker.run_finished.connect(self._on_run_finished)
         worker.stopped.connect(self._on_stopped)   # 🤖 Stop cleanup 完成 → 再清一次（catch late paint）
 
@@ -537,6 +570,7 @@ class MainWindow(QMainWindow):
             self._data_tables[i].setVisible(False)
             self._row_btns[i].setEnabled(True)
         self._inflight.clear()
+        self._tick_gen.clear()   # 🤖 Stop / 清理後任何 stale live tick 到都俾 token guard 丟（唔會 repaint 已清咗嘅 label）
         self.summary_lbl.setText("")
 
     # --- 結果繪製 -----------------------------------------------------------------
@@ -551,11 +585,14 @@ class MainWindow(QMainWindow):
     def _on_row_done(self, i: int, res: dict):
         self._inflight.discard(i)
         self._row_btns[i].setEnabled(True)
+        if 'tick_token' in res:   # 🤖 live stream row：記錄 token 俾後續 tick 驗證（舊 run 嘅 tick 作廢）
+            self._tick_gen[i] = res['tick_token']
         self._apply_state(i, res)
         remaining = len(self._inflight)
         self.progress_lbl.setText("Idle" if not remaining else f"運行中 {remaining} 個測試…")
 
     def _apply_state(self, i: int, res: dict):
+        self._row_state[i] = res['state']   # 🤖 live tick repaint 讀呢度取對應 state 顏色
         label, color = STATE_STYLE[res['state']]
         detail = res['detail'] if len(res['detail']) <= 300 else res['detail'][:300] + "…"
         lbl = self._res_labels[i]
@@ -597,6 +634,27 @@ class MainWindow(QMainWindow):
             tbl.setVisible(True)
             btn.setText("▾ 隱藏數據")
         self.table.resizeRowsToContents()
+
+    def _on_stream_tick(self, i: int, token: int, payload: dict):
+        """Live tick（worker emit → 自動 queue 去 GUI thread）：即時更新結果格 + 數據表。
+
+        - token 驗證：只接受該行當前 run 嘅 tick（Stop / 重跑後嘅 stale tick 直接丟）
+        - label 文字每 tick 都更新；數據表 repaint throttle 喺 TICK_UI_INTERVAL（4 Hz）
+        """
+        if self._tick_gen.get(i) != token:   # 🤖 stale tick → 直接丟
+            return
+        n = payload['n']
+        label, color = STATE_STYLE[self._row_state.get(i, 'pass')]
+        lbl = self._res_labels[i]
+        lbl.setText(f"{label}\nsnapshots={n}  live_updates={max(0, n - 1)}（live 串流中…）")
+        lbl.setStyleSheet(f"color: rgb({color.red()}, {color.green()}, {color.blue()});")
+        now = time.monotonic()
+        if now - self._last_tick_paint.get(i, 0.0) >= TICK_UI_INTERVAL:   # 🤖 throttle：數據表最多每秒 repaint 4 次
+            self._last_tick_paint[i] = now
+            df = payload['df']
+            self._fill_data_table(i, df)
+            if not self._data_tables[i].isVisible():   # 🤖 table 展開緊就唔好覆蓋「▾ 隱藏數據」文字
+                self._data_btns[i].setText(f"▸ 數據（{len(df)} rows）")
 
     def _on_run_finished(self, summary: dict):
         s = summary

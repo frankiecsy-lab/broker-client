@@ -6,6 +6,20 @@
 
 ## 2026-10-06
 
+### Bump numpy / matplotlib pins — Python 3.14（cp314）wheel 兼容
+檔案：`requirements.txt`
+
+- numpy==1.26.4 → **2.5.3**、matplotlib==3.10.1 → **3.11.2**：舊版冇 cp314 win_amd64 wheel → pip fallback sdist build（numpy 撞 Meson `[WinError 4551]` fail）；新 pin = 最新有 cp314 wheel，cp312 一樣兼容。
+- 驗證：Python 3.14.8 `pip install -r requirements.txt` 成功（futu-api sdist-only 但 pure-Python build 得）；全數 import + offscreen QApplication PASS。
+
+### Fulltest stream rows → 持續 live（baseline 收到即 PASS，live tick 持續更新到 Stop）
+檔案：`test/gui_fulltest.py`、`README.md`
+
+- **根因**：用戶反映 fulltest_page HK.HSImain stream_kline「不會刷新」— 唔係 bug，`_bounded_consume` 本來就係 5s bounded window by design（kline_page 先係無界連續）；用戶確認改持續 live。
+- **新語義**：第一次 yield = 歷史 baseline → 收到即刻出 verdict（✅ PASS；0 tick 唔算 fail — 可能冇成交時段 / IB 無 RTUS）；之後 live tick 持續更新結果格（`live_updates=N`）+ 數據表，到 Stop / 重跑為止。
+- **實作**：`_bounded_consume` → `_start_live`（baseline wait 30s timeout；monotonic tick token — GUI 端 `_tick_gen` guard 直接丟舊 run 嘅 stale tick；重跑同一行先 cancel 舊 live task 並 `gather(return_exceptions=True)` 等 broker cleanup）；新 `stream_tick(idx, token, payload)` signal（worker thread emit → 自動 queue 去 GUI thread）；數據表 repaint throttle `TICK_UI_INTERVAL=0.25s`（4 Hz），label 文字每 tick 更新；Stop / `_clear_results` 清 `_tick_gen`。
+- **驗證**：offscreen smoke 12/12 PASS（fake stream generator：baseline → 即刻 PASS、live_updates 計上、數據表 newest bar 刷新、重跑新 token + stale tick 被丟、Stop 清晒結果 + fake stream ctx cleanup、post-stop tick 被丟、get row regression、thread 乾淨退出）；真 E2E `test/e2e_gui_fulltest.py`（OpenD 11111）全 PASS — 包括 parallel 3 rows 0.2s、Stop → broker 端收到 K 線停止指令 + thread 乾淨退出。
+
 ### 新增 `requirements.txt` — 匯合全專案第三方依賴（單一安裝入口）
 檔案：`requirements.txt`（新）、`README.md`
 

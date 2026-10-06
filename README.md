@@ -9,7 +9,7 @@
 - **Symbol mapping L0–L4**：canonical = **Futu quote code**（用戶用 Futu app 對照）。L0 normalize → L1 config alias（IB-only pin）→ L2 per-client `resolve_symbol()`（IB 自動解析 front month，per-session cache）→ L3 broker 原生 fallback → L4 honest fail。永遠唔 hardcode 合約月份。
 - **Error honesty**：IB errorEvent per-request capture + code→人話映射；「無標的 / 無 permission / timeout」如實分開講。
 - **GUI 模糊搜尋 + i18n + FETCH**（`test/gui_kline.py`）：標的欄 autocomplete（中/英文名、繁簡通配，local index ~24,800 entries）、繁中/EN 一鍵切換（symbol name 跟隨）、FETCH 手動 refresh index（stale >24h 自動 fetch）。
-- **綜合測試矩陣 GUI**（`test/gui_fulltest.py`）：18 rows = futu/ib × 6 類標的 × get/stream；FUTU / IB **broker 分區 header**、每行獨立跑、**Run All 全部同時並發**、Stop cancel + 清理所有結果、成功行數據可拆疊顯示（**最新 bar 喺第一行**）、右上角 toggle **隱藏 EXPECTED FAIL** rows（display-only，唔影響 Run All）。
+- **綜合測試矩陣 GUI**（`test/gui_fulltest.py`）：18 rows = futu/ib × 6 類標的 × get/stream；FUTU / IB **broker 分區 header**、每行獨立跑、**Run All 全部同時並發**、Stop cancel + 清理所有結果、**stream 行持續 live**（第一次 yield baseline 收到即 PASS，之後 live tick 持續更新到 Stop）、成功行數據可拆疊顯示（**最新 bar 喺第一行**）、右上角 toggle **隱藏 EXPECTED FAIL** rows（display-only，唔影響 Run All）。
 - **One Gate 多券商匯合外殼**（`python gateway.py`）：頂部導航 + QStackedWidget 三頁（K綫測試 / 全功能測試 / 連綫測試，其餘頁面預留位）、繁中/簡中/EN 三語明確字串切換、暗/淺色 theme 一鍵切換；每頁獨立組件可單獨開視窗 Debug。
 
 ## 🚀 安裝與運行
@@ -56,7 +56,7 @@ pip install -r requirements.txt
 - `gateway/pages/fulltest_page.py` - **[Page 2 全功能測試]**：嵌入 gui_fulltest 全部功能（takeCentralWidget，零改動原檔）— theme 傳播（頁面級 QSS + STATE_STYLE 換色）、退出觸發原 closeEvent 清理鏈。可單獨運行。
 - `gateway/pages/connection_page.py` - **[Page 3 連綫測試]**：目前 placeholder 卡片；#05 將實裝 config.json 參數編輯 + FUTU OpenD / IB Gateway 連綫速度測試。可單獨運行。
 - `test/gui_kline.py` - **[主 GUI]**：模糊搜尋標的欄 + get/stream K 線圖表 + i18n 繁中/EN + FETCH。依賴：modules、symbol_search。
-- `test/gui_fulltest.py` - **[綜合測試矩陣 GUI]**：18 rows 無輸入欄位 + FUTU/IB broker 分區 header（setSpan）；每行 ▶ / 雙擊獨立跑、Run All 全並發（per-row task）、Stop cancel+清理、成功行數據拆疊（最新 bar 喺第一行）、隱藏 EXPECTED FAIL toggle（display-only）。依賴：modules。
+- `test/gui_fulltest.py` - **[綜合測試矩陣 GUI]**：18 rows 無輸入欄位 + FUTU/IB broker 分區 header（setSpan）；每行 ▶ / 雙擊獨立跑、Run All 全並發（per-row task）、stream 行持續 live（baseline → 即刻 PASS + tick 持續更新到 Stop，token 作廢 stale tick）、Stop cancel+清理、成功行數據拆疊（最新 bar 喺第一行）、隱藏 EXPECTED FAIL toggle（display-only）。依賴：modules。
 - `test/cli_kline.py` - **[CLI + contract tests]**：取數 CLI + CONTRACT / MAPPING_CASES regression（futu/ib 雙邊）。
 - `test/e2e_gui_p8.py` - **[P8 E2E]**：in-process QApplication 驗 fuzzy/i18n/FETCH（hermetic FakeDir，唔打網絡）。
 - `test/e2e_gui_fulltest.py` - **[fulltest GUI E2E]**：UI 結構 + 真 worker 端到端（futu rows）+ 3 rows 並發計時 + Run All wiring + Stop 清理。前置：OpenD。
