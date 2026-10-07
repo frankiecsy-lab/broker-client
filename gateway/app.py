@@ -14,15 +14,17 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
 from gateway.i18n import DEFAULT_LANG, LANGS, LANG_LABELS, t, theme_toggle_text
 from gateway.pages.connection_page import ConnectionPage
 from gateway.pages.fulltest_page import FulltestPage
+from gateway.pages.futu_trade_page import FutuTradePage
 from gateway.pages.kline_page import KlinePage
 from gateway.theme import apply_theme
 
 # ── 頁面 registry：nav 按鈕 + QStackedWidget 全部由呢個 list 生成 ──
-PAGE_KEYS = ('kline', 'fulltest', 'connection')
+PAGE_KEYS = ('kline', 'fulltest', 'connection', 'futu_trade')
 _PAGE_CLASSES = {
     'kline': KlinePage,
     'fulltest': FulltestPage,
     'connection': ConnectionPage,
+    'futu_trade': FutuTradePage,
 }
 
 

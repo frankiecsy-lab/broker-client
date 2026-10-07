@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-07
+
+### Fix symbol_search 繁簡 mismatch — index name load/fetch 時統一正規化做簡體
+檔案：`modules/symbol_search.py`、`CHANGELOG.md`
+
+- **根因**：code 假設 OpenD 回傳嘅港股中文名永遠係簡體（search 將 query t2s 正規化後 match），但實測 OpenD 回傳繁簡視版本/locale 而定 — 本機 `symbol_index.json` 存咗繁體（`騰訊控股`）→ CJK fuzzy search 0 hits + EN fallback 顯示繁體（e2e_gui_p8 2 FAIL，pre-existing）。
+- **Fix**：新 `_normalize_cjk(entry)` — `_load()` / `fetch()` 時將 `name`/`name_zh`/`name_en` 嘅 CJK 欄統一 t2s 正規化做簡體（canonical 存簡體）；~0.2s / 25k entries；opencc 缺席 no-op（保持原行為）。正規化後：search 繁/簡輸入都 match、EN fallback 顯示原生簡體、zh 顯示 s2t 轉返繁體（round-trip 實測 `恒指期貨主連` 精確）。
+- **自愈**：舊 cache 檔唔改動；下次 FETCH 會將全份 cache 以正規化形式 persist。
+- **驗證**：e2e_gui_p8 14/14 PASS（之前 2 FAIL）；CLI search 繁/簡輸入都 hit HK.00700；futu trade page E2E 26/26 無 regression。
+
+### One Gate Page 4 FUTU 交易 — OpenSecTradeContext 下單 / 今日訂單 / 持倉 / 帳戶資金（新頁）
+檔案：`gateway/pages/futu_trade_page.py`（新）、`gateway/app.py`、`gateway/i18n.py`、`test/e2e_gui_futu_trade.py`（新）、`README.md`
+
+- **範圍**：OpenD 交易連線 + 帳戶列表（`get_acc_list`）+ 下單（`place_order`，NORMAL/MARKET/AUCTION_LIMIT/LIMIT_IF_TOUCHED × DAY/GTC/IOC）+ 今日訂單（`order_list_query`）+ 撤選定 / 全數撤（`modify_order(CANCEL)` / `cancel_all_order`）+ 持倉同帳戶資金（`position_list_query` + `accinfo_query`，同一 op batched）+ 解鎖交易（`unlock_trade`）。
+- **線程模型**：全部 SDK 調用行單一 QThread worker（queue 串行 — futu OpenD 連線唔係 thread-safe，唔似 quote 邊每 request 開獨立連線）；signal 自動 queue 返 GUI thread。`futu` lazy import 喺 worker method 入面（page module top-level 唔 import futu → E2E 可以 stub `sys.modules['futu']` 做 hermetic test）。
+- **安全**：REAL 帳戶下單要 QMessageBox 確認 + 先解鎖；SIMULATE 直接行；全數撤有確認框。選定 REAL 帳戶時 label 用 accent 色提醒。
+- **市場過濾 client-side**（filter `trdmarket_auth`，唔使重連）；connect 後自動拉帳戶列表、下單成功後自動刷新訂單表。
+- **i18n**：40 個新 keys × 三語（fail-fast `t()`）；theme 跟隨外殼 listener registry（同其他頁同一 pattern）。單獨運行：`python gateway/pages/futu_trade_page.py`。
+- **驗證**：E2E 26/26 PASS — offscreen hermetic 完整 flow（FakeCtx：connect→accounts / 市場過濾 / SIM 下單 / orders 自動刷新 / 撤選定 / positions+accinfo / REAL 解鎖錯密碼+確認框 path / disconnect ctx.close）+ i18n 三語 retranslate + theme 雙向；live read-only（真 OpenD 127.0.0.1:11111：connect + accounts + positions/accinfo，**絕不落單 / 撤單 / unlock**）。
+
 ## 2026-10-06
 
 ### Bump numpy / matplotlib pins — Python 3.14（cp314）wheel 兼容

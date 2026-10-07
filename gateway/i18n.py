@@ -104,6 +104,113 @@ STRINGS = {
         'timeout — host 不可達或服務無回應',
         '超时 — host 不可达或服务无响应',
         'Timeout — host unreachable or no response from service'),
+
+    # ── Page 4：FUTU 交易（futu_trade_page）──
+    'nav_futu_trade': _s('FUTU 交易', 'FUTU 交易', 'Futu Trade'),
+    'page_futu_trade_title': _s('FUTU 交易管理', 'FUTU 交易管理', 'Futu Trade Management'),
+    'page_futu_trade_body': _s(
+        '富途 OpenD 交易：連線 + 帳戶列表、下單（place_order）、今日訂單（查詢 / 撤選定 / 全數撤）、持倉同帳戶資金。'
+        '所有 SDK 調用行獨立 QThread；REAL 帳戶操作彈確認框。',
+        '富途 OpenD 交易：连线 + 账户列表、下单（place_order）、今日订单（查询 / 撤选定 / 全部撤）、持仓和账户资金。'
+        '所有 SDK 调用走独立 QThread；REAL 账户操作弹确认框。',
+        'Futu OpenD trading: connect + account list, place orders (place_order), today\'s orders\n'
+        '(query / cancel selected / cancel all), positions and account funds. All SDK calls run on a dedicated\n'
+        'QThread; REAL-account actions require confirmation.'),
+
+    # Page 4：連線同帳戶
+    'trade_conn_title': _s('連線同帳戶', '连接和账户', 'Connection & Accounts'),
+    'trade_market': _s('市場過濾', '市场过滤', 'Market filter'),
+    'trade_connect': _s('連線 OpenD', '连线 OpenD', 'Connect OpenD'),
+    'trade_disconnect': _s('斷開', '断开', 'Disconnect'),
+    'trade_conn_ok': _s(
+        '✅ 已連線（{ms} ms）— {n} 個帳戶',
+        '✅ 已连接（{ms} ms）— {n} 个账户',
+        '✅ Connected ({ms} ms) — {n} accounts'),
+    'trade_conn_fail': _s('❌ 連線失敗：{err}', '❌ 连接失败：{err}', '❌ Connection failed: {err}'),
+    'trade_acc_selected': _s(
+        '當前帳戶：{acc_id}（{env} / {type}）',
+        '当前账户：{acc_id}（{env} / {type}）',
+        'Current account: {acc_id} ({env} / {type})'),
+    'trade_no_account': _s(
+        '未選帳戶 — 喺上面表格撳一行',
+        '未选账户 — 在上方表格点一行',
+        'No account selected — click a row above'),
+
+    # Page 4：下單
+    'trade_order_title': _s('下單', '下单', 'Place Order'),
+    'trade_code': _s('代碼 (code)', '代码 (code)', 'Code'),
+    'trade_side': _s('方向', '方向', 'Side'),
+    'trade_otype': _s('訂單類型', '订单类型', 'Order type'),
+    'trade_price': _s('價格', '价格', 'Price'),
+    'trade_qty': _s('數量', '数量', 'Quantity'),
+    'trade_tif': _s('TIF', 'TIF', 'TIF'),
+    'trade_unlock_pwd': _s('交易解鎖密碼', '交易解锁密码', 'Trade unlock password'),
+    'trade_unlock_btn': _s('解鎖交易', '解锁交易', 'Unlock Trade'),
+    'trade_place_btn': _s('下單', '下单', 'Place Order'),
+    'trade_busy': _s('⏳ 處理中…', '⏳ 处理中…', 'Processing…'),
+    'trade_unlock_ok': _s(
+        '✅ 已解鎖（本連線有效）',
+        '✅ 已解锁（本连接有效）',
+        '✅ Unlocked (valid for this connection)'),
+    'trade_unlock_fail': _s('❌ 解鎖失敗：{err}', '❌ 解锁失败：{err}', '❌ Unlock failed: {err}'),
+    'trade_need_account': _s(
+        '請先連線並選擇帳戶',
+        '请先连接并选择账户',
+        'Please connect and select an account first'),
+    'trade_need_unlock': _s(
+        'REAL 帳戶下單要先解鎖交易',
+        'REAL 账户下单要先解锁交易',
+        'Unlock trade required before placing orders on a REAL account'),
+    'trade_invalid_form': _s(
+        '❌ 表單有誤：code 必填、qty 正整數、非 MARKET 單 price > 0',
+        '❌ 表单有误：code 必填、qty 正整数、非 MARKET 单 price > 0',
+        '❌ Invalid form: code required, qty positive int, price > 0 for non-MARKET orders'),
+    'trade_place_ok': _s(
+        '✅ 下單成功 — order_id={id}',
+        '✅ 下单成功 — order_id={id}',
+        '✅ Order placed — order_id={id}'),
+    'trade_place_fail': _s('❌ 下單失敗：{err}', '❌ 下单失败：{err}', '❌ Place order failed: {err}'),
+
+    # Page 4：今日訂單
+    'trade_orders_title': _s('今日訂單', '今日订单', "Today's Orders"),
+    'trade_refresh': _s('刷新', '刷新', 'Refresh'),
+    'trade_cancel_sel': _s('撤選定單', '撤选定单', 'Cancel Selected'),
+    'trade_cancel_all': _s('全數撤單', '全部撤单', 'Cancel All'),
+    'trade_no_selection': _s(
+        '請先喺訂單表撳一行',
+        '请先在订单表点一行',
+        'Please select an order row first'),
+    'trade_cancel_ok': _s(
+        '✅ 已撤單（order_id={id}）',
+        '✅ 已撤单（order_id={id}）',
+        '✅ Order cancelled (order_id={id})'),
+    'trade_cancel_all_ok': _s('✅ 已全部撤單', '✅ 已全部撤单', '✅ All orders cancelled'),
+    'trade_op_fail': _s('❌ {err}', '❌ {err}', '❌ {err}'),
+
+    # Page 4：持倉同帳戶資金
+    'trade_pos_title': _s('持倉同帳戶資金', '持仓和账户资金', 'Positions & Account Funds'),
+    'trade_accinfo_lbl': _s(
+        '帳戶資金：{kv}',
+        '账户资金：{kv}',
+        'Account funds: {kv}'),
+
+    # Page 4：REAL 確認框
+    'trade_real_confirm_title': _s(
+        '⚠️ REAL 帳戶操作確認',
+        '⚠️ REAL 账户操作确认',
+        '⚠️ REAL Account Confirmation'),
+    'trade_confirm_place': _s(
+        '即將喺 REAL 帳戶下單：\n{code} {side}\n數量 = {qty}，價格 = {price}（{otype} / {tif}）\n\n確認執行？',
+        '即将在 REAL 账户下单：\n{code} {side}\n数量 = {qty}，价格 = {price}（{otype} / {tif}）\n\n确认执行？',
+        'About to place an order on a REAL account:\n{code} {side}\nQty = {qty}, Price = {price} ({otype} / {tif})\n\nConfirm?'),
+    'trade_confirm_cancel': _s(
+        '即將喺 REAL 帳戶撤單 order_id={id}，確認？',
+        '即将在 REAL 账户撤单 order_id={id}，确认？',
+        'About to cancel order {id} on a REAL account. Confirm?'),
+    'trade_confirm_cancel_all': _s(
+        '即將喺 REAL 帳戶全數撤單（{acc_id}），確認？',
+        '即将在 REAL 账户全部撤单（{acc_id}），确认？',
+        'About to cancel ALL orders on REAL account {acc_id}. Confirm?'),
 }
 
 

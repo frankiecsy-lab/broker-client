@@ -3,8 +3,9 @@
 # 數據源 = Futu OpenD get_stock_basicinfo(market, stock_type) 枚舉 — probe 實測（test/probe_symbol_names.py）：
 #   - 本 SDK 版本（futu-api 10.05.6508）冇 search_quote / get_stock_screen → 本地 index 係唯一搜尋路；
 #     miss 嘅輸入照原樣 pass-through（autocomplete 永遠唔 block 輸入）。
-#   - name 欄單語言：美股 = 英文、港股/期貨 = 中文（簡體）→ 分存 name_zh / name_en，顯示缺邊個語言 fallback 返原生名。
-#     opencc 處理繁簡雙向：search 將 query 正規化做簡體先 match；zh 顯示時轉返繁體。
+#   - name 欄單語言：美股 = 英文、港股/期貨 = 中文 → 分存 name_zh / name_en，顯示缺邊個語言 fallback 返原生名。
+#     OpenD 回傳嘅中文名繁簡視版本/locale 而定（實測有繁體 cache）→ **load/fetch 時經 opencc 繁→簡統一正規化**：
+#     search 將 query 正規化做簡體先 match；EN fallback 顯示原生（簡體）；zh 顯示時 s2t 轉返繁體。
 #
 # Scope（用戶確認）：股票 / ETF / 指數 / 期貨 main contract。窩輪/牛熊證/期權太動態太海量，唔入 index
 #   （用戶打準確 code 一樣 pass-through 行得通）。
@@ -29,10 +30,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from opencc import OpenCC
-    _T2S = OpenCC('t2s')   # 繁 → 簡（search query 正規化 — HK name 存簡體）
+    _T2S = OpenCC('t2s')   # 繁 → 簡（canonical 正規化：index name + search query）
     _S2T = OpenCC('s2t')   # 簡 → 繁（zh 顯示）
 except ImportError:        # opencc 唔係硬依賴 — 冇就跳過繁簡轉換（match 變 script-sensitive）
     _T2S = _S2T = None
+
 
 from futu import OpenQuoteContext, RET_OK, Market, SecurityType
 
@@ -53,6 +55,19 @@ _FUT_CODE = re.compile(r'^(.*?)(\d{4})$')             # HK.HSI2610 → prefix 'H
 
 def _has_cjk(s):
     return any('一' <= ch <= '鿿' for ch in s)
+
+
+def _normalize_cjk(entry):
+    """entry 嘅 CJK name 欄統一正規化做簡體（in-place）。OpenD 回傳繁/簡視版本/locale 而定 —
+       canonical 存簡體先至 search t2s match / EN fallback / zh s2t 顯示三條路全部成立。
+       opencc 缺席時 no-op（保持原行為）；純英文 entry 唔 touch。"""
+    if _T2S is None:
+        return entry
+    for k in ('name', 'name_zh', 'name_en'):
+        v = entry.get(k, '')
+        if v and _has_cjk(v):
+            entry[k] = _T2S.convert(v)
+    return entry
 
 
 def _load_futu_config():
@@ -97,7 +112,8 @@ class SymbolDirectory:
         try:
             with open(self.cache_path, 'r', encoding='utf-8') as f:
                 obj = json.load(f)
-            self.entries = obj.get('entries', [])
+            # 舊 cache 可能存繁體（OpenD locale 差異）— load 時統一正規化做簡體（~0.2s / 25k entries）
+            self.entries = [_normalize_cjk(e) for e in obj.get('entries', [])]
             self.fetched_at = obj.get('fetched_at')
         except (OSError, ValueError):
             pass   # 首次運行 / cache 壞 — 當空 index（fetch 會重建）
@@ -157,6 +173,7 @@ class SymbolDirectory:
                             entry['name_zh'] = name
                         else:
                             entry['name_en'] = name
+                        _normalize_cjk(entry)   # canonical 簡體 — cache 統一 script（OpenD 回繁/簡都一樣）
                         fresh.append(entry)
                         kept += 1
                     if progress_cb:
