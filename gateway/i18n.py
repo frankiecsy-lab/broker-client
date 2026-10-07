@@ -109,13 +109,13 @@ STRINGS = {
     'nav_futu_trade': _s('FUTU 交易', 'FUTU 交易', 'Futu Trade'),
     'page_futu_trade_title': _s('FUTU 交易管理', 'FUTU 交易管理', 'Futu Trade Management'),
     'page_futu_trade_body': _s(
-        '富途 OpenD 交易：連線 + 帳戶列表、下單（place_order）、今日訂單（查詢 / 撤選定 / 全數撤）、持倉同帳戶資金。'
-        '所有 SDK 調用行獨立 QThread；REAL 帳戶操作彈確認框。',
-        '富途 OpenD 交易：连线 + 账户列表、下单（place_order）、今日订单（查询 / 撤选定 / 全部撤）、持仓和账户资金。'
-        '所有 SDK 调用走独立 QThread；REAL 账户操作弹确认框。',
-        'Futu OpenD trading: connect + account list, place orders (place_order), today\'s orders\n'
-        '(query / cancel selected / cancel all), positions and account funds. All SDK calls run on a dedicated\n'
-        'QThread; REAL-account actions require confirmation.'),
+        '富途 OpenD 交易：左欄今日訂單 + 持倉資金，右欄連線帳戶（模擬/實盤切換、只顯示 ACTIVE）+ 下單（買入/賣出）。'
+        '所有資料跟隨環境切換，唔混模擬同實盤；REAL 帳戶操作彈確認框。',
+        '富途 OpenD 交易：左栏今日订单 + 持仓资金，右栏连线账户（模拟/实盘切换、只显示 ACTIVE）+ 下单（买入/卖出）。'
+        '所有资料跟随环境切换，不混模拟和实盘；REAL 账户操作弹确认框。',
+        'Futu OpenD trading: left = today\'s orders + positions/funds, right = connection & accounts\n'
+        '(SIMULATE/REAL toggle, ACTIVE accounts only) + order form (Buy/Sell). All data follows the selected\n'
+        'environment — sim and real are never mixed; REAL-account actions require confirmation.'),
 
     # Page 4：連線同帳戶
     'trade_conn_title': _s('連線同帳戶', '连接和账户', 'Connection & Accounts'),
@@ -127,26 +127,37 @@ STRINGS = {
         '✅ 已连接（{ms} ms）— {n} 个账户',
         '✅ Connected ({ms} ms) — {n} accounts'),
     'trade_conn_fail': _s('❌ 連線失敗：{err}', '❌ 连接失败：{err}', '❌ Connection failed: {err}'),
+    'trade_env_sim': _s('模擬盤', '模拟盘', 'SIMULATE'),
+    'trade_env_real': _s('實盤', '实盘', 'REAL'),
     'trade_acc_selected': _s(
         '當前帳戶：{acc_id}（{env} / {type}）',
         '当前账户：{acc_id}（{env} / {type}）',
         'Current account: {acc_id} ({env} / {type})'),
     'trade_no_account': _s(
-        '未選帳戶 — 喺上面表格撳一行',
-        '未选账户 — 在上方表格点一行',
-        'No account selected — click a row above'),
+        '未選帳戶 — 喺右欄帳戶表撳一行',
+        '未选账户 — 在右栏账户表点一行',
+        'No account selected — click a row in the accounts table (right)'),
+    'trade_no_active_acc': _s(
+        '冇 ACTIVE 帳戶（此環境 / 市場）— 切換模擬/實盤或市場過濾',
+        '无 ACTIVE 账户（此环境 / 市场）— 切换模拟/实盘或市场过滤',
+        'No ACTIVE account (this env / market) — switch SIMULATE/REAL or the market filter'),
+    # 解鎖（實盤）— 下單表單內置欄位 + 按鍵，只 REAL env 顯示；本連線 ctx.unlock_trade()
+    'trade_unlock': _s('解鎖', '解锁', 'Unlock'),
 
-    # Page 4：下單
+    # Page 4：下單（買入/賣出兩鍵；方向由按鍵決定）
     'trade_order_title': _s('下單', '下单', 'Place Order'),
     'trade_code': _s('代碼 (code)', '代码 (code)', 'Code'),
-    'trade_side': _s('方向', '方向', 'Side'),
     'trade_otype': _s('訂單類型', '订单类型', 'Order type'),
     'trade_price': _s('價格', '价格', 'Price'),
     'trade_qty': _s('數量', '数量', 'Quantity'),
     'trade_tif': _s('TIF', 'TIF', 'TIF'),
-    'trade_unlock_pwd': _s('交易解鎖密碼', '交易解锁密码', 'Trade unlock password'),
-    'trade_unlock_btn': _s('解鎖交易', '解锁交易', 'Unlock Trade'),
-    'trade_place_btn': _s('下單', '下单', 'Place Order'),
+    'trade_buy_btn': _s('買入 BUY', '买入 BUY', 'BUY'),
+    'trade_sell_btn': _s('賣出 SELL', '卖出 SELL', 'SELL'),
+    'trade_unlock_pwd': _s('交易解鎖密碼', '交易解锁密码', 'Trade unlock pwd'),
+    'trade_enter_pwd': _s(
+        '請輸入交易解鎖密碼（只存記憶體，唔會保存）',
+        '请输入交易解锁密码（只存内存，不会保存）',
+        'Please enter the trade unlock password (kept in memory only, never stored)'),
     'trade_busy': _s('⏳ 處理中…', '⏳ 处理中…', 'Processing…'),
     'trade_unlock_ok': _s(
         '✅ 已解鎖（本連線有效）',
@@ -158,9 +169,9 @@ STRINGS = {
         '请先连接并选择账户',
         'Please connect and select an account first'),
     'trade_need_unlock': _s(
-        'REAL 帳戶下單要先解鎖交易',
-        'REAL 账户下单要先解锁交易',
-        'Unlock trade required before placing orders on a REAL account'),
+        'REAL 帳戶下單要先解鎖 — 喺「交易解鎖密碼」欄輸入密碼後再撳買入/賣出（會自動解鎖並落單）',
+        'REAL 账户下单要先解锁 — 在"交易解锁密码"栏输入密码后再点买入/卖出（会自动解锁并下单）',
+        'REAL orders require trade unlock first — enter the password in the "Trade unlock pwd" field, then click BUY/SELL (auto-unlocks and places)'),
     'trade_invalid_form': _s(
         '❌ 表單有誤：code 必填、qty 正整數、非 MARKET 單 price > 0',
         '❌ 表单有误：code 必填、qty 正整数、非 MARKET 单 price > 0',
