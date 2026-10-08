@@ -13,6 +13,9 @@ Flow:
 3. 串流：默認 HK.00700 → baseline df → chart._rows + 價 label；tick → 價即時更新 +
    throttle 後 chart 更新；stale token tick 作廢
 4. 換週期：K_5M 按鈕 exclusive（得一個 checked）→ 重新 stream（fake 收新 ktype）
+4b. ⏳ 加載態 + 快取 + 兩段式（全部喺 GUI 端）：撳週期即刻加暗 + LOADING、baseline 到返收；
+    快取命中 → **即刻上返睇過嘅圖**（唔使等 network，真 baseline 到咗先覆蓋）；baseline/tick 一律寫返入快取；
+    兩段式第二次快照（完整根數）喺 GUI 只係多一次重繪，快取跟住更新
 5. 換標的：'hk.hsimain' → canonical 大細階 'HK.HSImain'（經 fake index get()）；
    模糊輸入 '腾讯' → completer model 連名；無效代碼 → ❌ label
 6. layout 切換：2×2 → cells 0-3 可見 4-5 隱藏、**cells 實例不變**；cell1 設標的 → 新 stream
@@ -36,19 +39,20 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QMargins, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QPushButton, QToolButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import gateway.indicators as indicators  # noqa: E402
 import gateway.state_store as state_store  # noqa: E402
 from gateway.app import PAGE_KEYS  # noqa: E402
 from gateway.pages.quotes_page import QuotesPage, KTYPES, LAYOUTS, N_CELLS  # noqa: E402
+from modules import kline_cache  # noqa: E402
 
 FAILURES = []
 
 
-def check(name, ok):
-    print(('  ✅ ' if ok else '  ❌ ') + name)
+def check(name, ok, detail=''):
+    print(('  ✅ ' if ok else '  ❌ ') + name + (f'  [{detail}]' if not ok and detail else ''))
     if not ok:
         FAILURES.append(name)
 
@@ -107,10 +111,13 @@ class FakeSearchDir:
 
 
 class FakeKlineClient:
-    """BrokerClient.stream_kline 契約替身：first yield = baseline，其後 = 一個 tick，之後吊住等 cancel。"""
+    """BrokerClient.stream_kline 契約替身：first yield = baseline，其後 = 一個 tick，之後吊住等 cancel。
+       `two_phase` 入面嘅 key 照 futu 兩段式順序：短 baseline → 完整快照（根數多）→ 吊住。"""
 
     def __init__(self):
         self.calls = []          # (code, ktype) — keyword 調用都記錄
+        self.nums = []           # (code, ktype, kline_num) — ⏳ 根數邊度決定（行情頁應該一律 None → 食 config）
+        self.two_phase = set()   # (code, ktype) → 多 yield 一次完整快照
         self.entered = 0
         self.exited = 0
         self._hold = {}          # (code, ktype) → asyncio.Event（generator 吊住唔好結束）
@@ -124,12 +131,19 @@ class FakeKlineClient:
         return None
 
     async def stream_kline(self, code, ktype, broker=None, kline_num=None):
-        self.calls.append((str(code), str(ktype)))
+        key = (str(code), str(ktype))
+        self.calls.append(key)
+        self.nums.append((key[0], key[1], kline_num))
         ev = asyncio.Event()
-        self._hold[(str(code), str(ktype))] = ev
+        self._hold[key] = ev
 
         async def gen():
             yield _df([100.0, 101.0, 102.0])          # baseline
+            if key in self.two_phase:                 # ⏳ 兩段式第二段：完整根數先畀齊
+                await asyncio.sleep(0.05)
+                yield _df([100.0 + i for i in range(12)])
+                await ev.wait()
+                return
             await asyncio.sleep(0.05)
             yield _df([100.0, 101.0, 102.0, 105.0])   # live tick
             await ev.wait()                            # 吊住 — 等換標的/週期或 shutdown 時 cancel
@@ -149,6 +163,7 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix='e2e_quotes_')
     state_store.STATE_PATH = Path(tmpdir) / 'ui_state.json'
 
+    kline_cache.clear()   # ⏳ 快取係進程層 → 先清乾淨，先可以證明邊啲圖真係由快取嚟
     fake = FakeKlineClient()
     page = QuotesPage(client_factory=lambda: fake)
     # 注入 fake symbol index（completer 構造時已食真 directory → 換 _dir）
@@ -229,6 +244,51 @@ def main():
     check('K_5M exclusive：得一個 checked', checked == ['K_5M'] and cell0._period == 'K_5M')
     check('換週期 → 重新 stream K_5M',
           wait_for(app, lambda: ('HK.00700', 'K_5M') in fake.calls, what='K_5M stream'))
+    # 等 K_5M 條 tick 畫完（throttle timer 已 fire）→ 4b 先唔會被舊 pending redraw 蓋住
+    check('K_5M baseline + tick 照樣上圖（4 根）',
+          wait_for(app, lambda: len(cell0.chart._rows) == 4, what='K_5M tick bars'))
+
+    # ── Part 4b：⏳ 加載態 + K 線快取 + 兩段式（全部喺 GUI 端；futu 兩段契約見 t_p2 Part B）──
+    print('── Part 4b: loading overlay + kline cache + two-phase snapshot ──')
+    # 呢一段全部斷言都喺 click() 之後**即刻**做：`_on_cell_period` → `_start_cell_stream`
+    # （讀快取 + set_busy）全程同步喺 GUI thread，冇 event loop 介入 → 冇 race
+    SEED = [('2026-01-01 09:30:00', 7.0, 8.0, 6.0, 7.5, 77),
+            ('2026-01-01 09:31:00', 7.5, 9.0, 7.0, 8.5, 88),
+            ('2026-01-01 09:32:00', 8.5, 9.5, 8.0, 9.0, 99)]
+    kline_cache.put('HK.00700', 'K_15M', SEED)   # 模擬「呢個週期之前睇過」
+    cell0._period_btns['K_15M'].click()
+    lbl = cell0.chart.findChild(QLabel, 'kline_loading')
+    check('換週期 → 即刻加暗 + LOADING（同步 set_busy，唔使等 network）',
+          cell0.chart._overlay is not None and cell0.chart._overlay.isVisible()
+          and lbl is not None and bool(lbl.text().strip()),
+          repr(lbl.text()) if lbl is not None else '搵唔到 kline_loading')
+    check('快取命中 → 即刻上返睇過嘅圖（零 network 等待，唔係空白）', cell0.chart._rows == SEED,
+          str(cell0.chart._rows[:1]))
+    check('快取上圖期間照樣有 LOADING（真 baseline 到咗先收）', cell0.chart._overlay.isVisible())
+    check('快取命中照樣起 stream（快取只係免空白，唔係取代取數）',
+          wait_for(app, lambda: ('HK.00700', 'K_15M') in fake.calls, what='K_15M stream'))
+    check('真 baseline 到 → 覆蓋快取圖 + 疊層收返',
+          wait_for(app, lambda: len(cell0.chart._rows) == 3 and not cell0.chart._overlay.isVisible(),
+                   what='baseline overwrites cache'))
+    check('baseline 寫返入快取（下次切返即刻有圖）', kline_cache.get('HK.00700', 'K_15M') is not None)
+
+    # ⏳ 兩段式喺 GUI 端只係「多一次重繪」：consumer 契約（n==1 baseline、其後 tick）完全冇改
+    fake.two_phase.add(('HK.00700', 'K_30M'))
+    cell0._period_btns['K_30M'].click()
+    check('兩段式第一段：短 baseline 即刻上圖（3 根）',
+          wait_for(app, lambda: len(cell0.chart._rows) == 3, what='two-phase baseline'))
+    check('兩段式第二段：完整快照先畀齊根數（12 根，唔使再郁）',
+          wait_for(app, lambda: len(cell0.chart._rows) == 12, what='two-phase full snapshot'))
+    check('快取跟住更新成最新見到嘅快照（唔留低短嗰份）',
+          len(kline_cache.get('HK.00700', 'K_30M') or []) == 12)
+    check('行情頁一律唔傳 kline_num → 根數歸 config（futu 層兩段式）',
+          all(n is None for (_, _, n) in fake.nums), str(fake.nums))
+
+    # 切返睇過嘅 K_5M → 即刻用快取上圖（Part 7 都要呢個 state 做持久化斷言）
+    cached5 = kline_cache.get('HK.00700', 'K_5M')
+    cell0._period_btns['K_5M'].click()
+    check('切返睇過嘅週期 → 即刻上快取圖（4 根，唔使等 network）',
+          cell0.chart._rows == cached5 and len(cached5 or []) == 4, str(cached5))
 
     # ── Part 5：換標的（canonical 大細階）+ 模糊輸入 + 無效代碼 ──
     print('── Part 5: symbol change + fuzzy + invalid ──')

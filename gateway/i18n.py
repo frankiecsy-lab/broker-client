@@ -36,6 +36,12 @@ STRINGS = {
     'quotes_ind_menu': _s('指標選項', '指标选项', 'Indicator options'),
     'quotes_strategy_label': _s('策略', '策略', 'Strategy'),
     'quotes_strategy_none': _s('無策略', '无策略', 'None'),
+    # ── K 線圖加載態（`KlineChart` overlay — 行情頁 6 格 + K 線頁共用同一組件）──
+    'chart_loading': _s('⏳ 載入中…', '⏳ 加载中…', 'Loading…'),
+    'chart_loading_slow': _s(
+        '⏳ 載入中…（比較慢 — 檢查代碼 / 連線 / 行情權限）',
+        '⏳ 加载中…（比较慢 — 检查代码 / 连接 / 行情权限）',
+        'Loading… (slow — check symbol / connection / quote permission)'),
     # ── Page 5 標的列表 ──
     'nav_symbol_list': _s('標的列表', '标的列表', 'Symbol List'),
     'page_symbol_list_title': _s('標的列表', '标的列表', 'Symbol List'),

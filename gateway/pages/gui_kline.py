@@ -38,10 +38,12 @@ from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
 from matplotlib.path import Path
 from matplotlib.ticker import FuncFormatter, MaxNLocator
-from modules.broker import BrokerClient
+from modules import kline_cache   # ⏳ K 線取數快取：切返睇過嘅週期即刻有圖
 from modules.registry import BROKERS as BROKER_REGISTRY   # 🤖 P2：券商名單一來源（唔再硬編碼）
 from modules.symbol_search import get_directory          # 🤖 P8：本地 symbol index（fuzzy 輸入 + FETCH）
+from gateway.kline_stream import ClientHolderMixin, LoopThreadBase  # ⏳ stream 基建（同行情頁共用一份）
 from gateway.symbol_input import attach_symbol_input, make_search  # 🤖 全域模糊輸入（ticket #17 集中處理）
+from gateway.i18n import t as gt   # 🤖 加載態文案屬共用組件（KlineChart）→ 用三語單一來源；本檔自己嘅 chrome 照用上面嘅 t()
 
 
 # 🎨 主題跟 stock_client/app/theme/palette.py（dark）；蠟燭色對已過 CVD 驗證（deutan ΔE 11.1）
@@ -142,6 +144,13 @@ def _fmt_price(v):
     return s if "." in s else s + ".0"
 
 
+def _rgba(hex_color, alpha):
+    """'#RRGGBB' → 'rgba(r,g,b,a)' — 加載態 scrim 用（palette 得 flat hex，透明度現算）。"""
+    h = hex_color.lstrip('#')
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f'rgba({r},{g},{b},{alpha})'
+
+
 def _short_time(s):
     """X 軸標籤：'2026-10-05 14:30:00' → '10-05 14:30'（日期型保持原樣）。"""
     s = str(s)
@@ -176,6 +185,8 @@ class KlineChart(QWidget):
     · `_apply_view`（pan·zoom·hover 淨係改 limits + 重算可見 Y fit）。x 一律用絕對 index（`_s` 恒 0）。
     🎞️ 過渡（#23）：縮放 / 復位 / 松手慣性一律經 `_animate_to`（ease-out，`ANIM_MS`）—
     🤖 唔係為咗幀率：Agg 喺 1400×700 有 ~20-25 ms 底線（≈40-50 fps），順唔順係靠每幀位移細 + 有加減速。
+    ⏳ 加載態：`set_busy(True/False)` — 取數期間 canvas 加暗 + LOADING。寫喺呢度一次，
+    K 線頁 1 個圖 + 行情頁 6 格自動全有（全部都係本類 / 其子类）。
     """
 
     MAX_DRAW = 300   # 跟隨模式畫最後 N 根 — 保持實時重繪流暢 + 蠟燭夠寬睇得清
@@ -186,6 +197,7 @@ class KlineChart(QWidget):
     PAN_EASE = 0.55  # 🖱️ 平滑平移（#24）：每幀追近游標位置嘅比例 → ~2 幀（≈30 ms）收歛，感覺唔到滯後，但每幀位移細
     Y_TICKS = 6      # 🤖 刻度文字係每幀最大開支之一（9 個 → 6 個 = −3 ms/幀），少而清晰就夠
     X_TICKS = 5      # 同上（時間標籤）
+    SLOW_MS = 8000   # ⏳ 加載態：超過呢個時間就轉「比較慢」文案 — 唔會永遠 LOADING 冇交代
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,6 +220,14 @@ class KlineChart(QWidget):
         self._pan_target = None            # 🖱️ 平滑平移（#24）：游標要求嘅 view，逐幀追近
         self._pan_running = False          # 🖱️ 追近 timer 鏈喺唔喺度
         self._y_lock = None                # 🖱️ 拖動期間鎖定嘅 (ax.ylim, axv.ylim) → 唔會邊拖邊重縮放
+        # ⏳ 加載態（惰性：唔係每個 chart 都會用到，行情格 6 格開機唔想即刻砌 6 份 `.ui`）
+        self._overlay = None               # gateway/ui/kline_overlay.ui 实例（見 _ensure_overlay）
+        self._loading_lbl = None
+        self._lang = 'zh_hk'               # 加載文案語言（set_lang 歸一：zh/en/zh_cn → gateway.i18n 語言碼）
+        self._slow = False                 # 已轉「比較慢」文案未？
+        self._slow_timer = QTimer(self)
+        self._slow_timer.setSingleShot(True)
+        self._slow_timer.timeout.connect(self._on_slow_loading)
 
         fig = Figure(facecolor=C_SURFACE, edgecolor="none")
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.06,
@@ -254,6 +274,73 @@ class KlineChart(QWidget):
         self._pan_target = None
         self._drag_hist = []
         self.set_bars([])
+
+    # --- ⏳ 加載態（取數期間加暗 + LOADING；调用者 = 兩頁嘅 start / update 路徑）───
+    def _ensure_overlay(self):
+        """惰性砌 `.ui` 疊層（`gateway/ui/kline_overlay.ui`）— 首次 set_busy 先砌。
+
+        🤖 唔喺 `__init__` 做：行情格嘅 chart 係 `chart_cell.ui` promote 出嚟（喺
+        `loader.createWidget` 回調入面），喺嗰度再行一次 QUiLoader 有嵌套風險。
+        """
+        if self._overlay is not None:
+            return self._overlay
+        from gateway.ui.loader import load_ui   # 延後 import：唔取數嘅情境（純繪畫測試）唔使載入 UI 工具
+        ov = load_ui('kline_overlay', QWidget, self)
+        ov.setAttribute(Qt.WA_StyledBackground, True)            # 純 QWidget 唔補呢個就食唔到 QSS background
+        ov.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # 加載期間 pan/zoom 照樣郁到 canvas
+        self._overlay = ov
+        self._loading_lbl = ov.findChild(QLabel, 'kline_loading')
+        self._restyle_overlay()
+        ov.setVisible(False)
+        return ov
+
+    def _place_overlay(self):
+        """疊層只蓋 canvas（唔包 readout）— 加載期間窗口郁動都要貼住。"""
+        if self._overlay is not None:
+            self._overlay.setGeometry(self.canvas.geometry())
+
+    def _restyle_overlay(self):
+        """scrim / 文字配色現算（跟當前 C_*）— theme 切換時由兩頁嘅 restyle 點調用。
+        🤖 唔用 QGraphicsOpacityEffect：佢會將成個 matplotlib canvas rasterize，開支遠大過一塊半透明板。"""
+        if self._overlay is None:
+            return
+        self._overlay.setStyleSheet(
+            f"QWidget#kline_overlay {{ background: {_rgba(C_SURFACE, 0.72)}; }}")
+        self._loading_lbl.setStyleSheet(
+            f"color: {C_ACCENT}; font-size: 14px; font-weight: bold; background: transparent;")
+        self._overlay.raise_()
+
+    def _set_loading_text(self):
+        self._loading_lbl.setText(gt('chart_loading_slow' if self._slow else 'chart_loading', self._lang))
+
+    def _on_slow_loading(self):
+        self._slow = True
+        self._set_loading_text()
+
+    def set_busy(self, on: bool):
+        if not on:
+            self._slow_timer.stop()
+            if self._overlay is not None:
+                self._overlay.setVisible(False)
+            return
+        ov = self._ensure_overlay()
+        self._place_overlay()
+        self._slow = False
+        self._set_loading_text()
+        ov.setVisible(True)
+        ov.raise_()
+        self._slow_timer.start(self.SLOW_MS)
+
+    def set_lang(self, lang):
+        """加載文案跟語言。兩邊語言碼唔同（gui_kline 'zh'/'en'、One Gate 'zh_hk'/'zh_cn'/'en'）→ 呢度歸一。"""
+        self._lang = 'en' if lang == 'en' else ('zh_cn' if lang == 'zh_cn' else 'zh_hk')
+        if self._overlay is not None and self._overlay.isVisible():
+            self._set_loading_text()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._overlay is not None:
+            self._place_overlay()   # 🤖 只改 geometry，唔 redraw（加載期間窗口可能照樣郁）
 
     # --- 繪製 -----------------------------------------------------------------
     @staticmethod
@@ -783,7 +870,7 @@ class CollapsiblePanel(QWidget):
 
 # ─────────────────────── asyncio ↔ Qt 橋（worker thread） ───────────────────────
 
-class Worker(QObject):
+class Worker(QObject, ClientHolderMixin):
     """住喺 worker thread；只發 signal，絕不碰 widget。
 
     stream_kline 同 get_kline 一樣回傳 (status, data, message)：成功時 data 係 async generator，
@@ -796,18 +883,13 @@ class Worker(QObject):
 
     UI_INTERVAL = 0.25  # ~4Hz：推送可以密好多，UI 更新節流到呢個間隔
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self, loop: asyncio.AbstractEventLoop, client_factory=None):
         super().__init__()
-        self._loop = loop
-        self._client = None            # BrokerClient（lazy，喺呢個 loop 上建立）
+        # client / loop / shutdown 契約全部喺 gateway/kline_stream（同行情頁共用）
+        self.init_client_holder(loop, client_factory)
         self._consumer_task: asyncio.Task | None = None
-        self._shutting_down = False
-
-    async def ensure_client(self):
-        if self._client is None:
-            self._client = BrokerClient()
-            await self._client.__aenter__()
-        return self._client
+        # 🔀 即切週期：被新 run 取代嘅舊 run → 佢嘅 done 唔好收復 GUI 狀態（button / 輸入框由新 run 接管）
+        self._silent_cancel = set()
 
     # --- GUI-thread 入口 --------------------------------------------------------
     def start_stream(self, code: str, ktype: str, num: int, broker: str):
@@ -835,6 +917,25 @@ class Worker(QObject):
             await t  # 等 broker 端清理（IB updateEvent / Futu ctx.close）完成先算數
         except BaseException:
             pass  # CancelledError 係預期；其他錯誤已經透過 update signal 報咗
+
+    # 🔀 即切週期：一定要喺 loop 上面「先 cancel 舊、再起新」。
+    #    唔可以喺 GUI thread 行 stop_stream() + start_stream()：start_stream 見到未 done 嘅舊 task 會直接 return。
+    def restart_stream(self, code: str, ktype: str, num: int, broker: str):
+        try:
+            asyncio.run_coroutine_threadsafe(self._restart(code, ktype, num, broker), self._loop)
+        except RuntimeError as e:  # loop 剛好停咗
+            logging.warning("restart rejected (loop not running): %s", e)
+
+    async def _restart(self, code: str, ktype: str, num: int, broker: str):
+        t = self._consumer_task
+        if t is not None and not t.done():
+            self._silent_cancel.add(t)
+            t.cancel()
+            try:
+                await asyncio.shield(t)   # 🛡️ 就算自己又被下一次即切 cancel，都唔拖冴新 run 起身
+            except BaseException:
+                pass
+        await self._run_stream(code, ktype, num, broker)
 
     # --- consumer（跑喺 worker loop） --------------------------------------------
     async def _run_stream(self, code: str, ktype: str, num: int, broker: str):
@@ -873,6 +974,11 @@ class Worker(QObject):
             st["error"] = f"{type(e).__name__}: {e}"
         finally:
             self._consumer_task = None
+            me = asyncio.current_task()
+            if me in self._silent_cancel:
+                # 🔀 呢個 run 係被即切取代 → 唔發 done（button / 輸入框狀態由新 run 接管）
+                self._silent_cancel.discard(me)
+                return
             if not st["baseline"] and not st["error"] and not cancelled:
                 st["error"] = "未收到 baseline（歷史 K 綫取得失敗或串流即時結束）"
             # done 一律發：GUI 靠呢個收復按鍵 / 輸入框
@@ -887,65 +993,22 @@ class Worker(QObject):
         return {"phase": phase, "error": st["error"], "ticks": st["ticks"],
                 "n_rows": st["n_rows"], "records": st["records"]}
 
-    async def shutdown(self):
-        if self._shutting_down:
-            return
-        self._shutting_down = True
+    async def _cancel_work(self):
+        """被 `ClientHolderMixin.shutdown()` call：cancel consumer → 等 broker 端清理（IB updateEvent /
+           futu 退訂閱）完成，先輪到 `release_client()`。"""
         t = self._consumer_task
         if t is not None and not t.done():
             t.cancel()
             try:
-                await t  # 等 broker 端清理完成先釋放 client
+                await t
             except BaseException:
                 pass
-        if self._client is not None:
-            try:
-                await self._client.__aexit__(None, None, None)  # 釋放 IB clientId 99（如用過）
-            except Exception as e:
-                logging.warning("BrokerClient cleanup failed: %s", e)
-            self._client = None
-        if self._loop.is_running():
-            self._loop.stop()
 
 
-class LoopThread(QThread):
-    """擁有 event loop + Worker；GUI thread 嘅 facade。"""
+class LoopThread(LoopThreadBase):
+    """K 線頁嘅 stream 橋：loop 生命週期見 `gateway/kline_stream.LoopThreadBase`，呢度得返 page 專屬 facade。"""
 
-    worker_ready = Signal(object)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._worker: Worker | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._stop_requested = False
-
-    @property
-    def worker(self) -> Worker | None:
-        return self._worker
-
-    # --- QThread body（跑喺 worker thread） ------------------------------------
-    def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        # Worker 喺呢度建立 → signal affinity == 呢個 thread → emit 自動 queue 去 GUI
-        self._worker = Worker(loop)
-        try:
-            self.worker_ready.emit(self._worker)
-            if self._stop_requested:
-                loop.run_until_complete(self._worker.shutdown())
-                return
-            loop.run_forever()
-        finally:
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                try:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass
-            loop.close()
+    worker_cls = Worker
 
     # --- GUI-thread facade ------------------------------------------------------
     def start_stream(self, code: str, ktype: str, num: int, broker: str):
@@ -958,24 +1021,11 @@ class LoopThread(QThread):
         if w is not None and self._loop is not None and self._loop.is_running():
             w.stop_stream()
 
-    def request_shutdown(self):
-        """GUI-thread 入口；pair with wait()。"""
-        deadline = time.monotonic() + 2.0
-        while True:
-            w, loop = self._worker, self._loop
-            if w is not None and loop is not None and loop.is_running():
-                try:
-                    asyncio.run_coroutine_threadsafe(w.shutdown(), loop)
-                except RuntimeError as e:
-                    logging.warning("request_shutdown rejected: %s", e)
-                return
-            if not self.isRunning():
-                return
-            self._stop_requested = True  # run() 會喺入 run_forever 前檢查
-            if time.monotonic() >= deadline:
-                logging.warning("request_shutdown timed out waiting for the bridge")
-                return
-            time.sleep(0.01)
+    def restart_stream(self, code: str, ktype: str, num: int, broker: str):
+        """🔀 即切週期：要「先 cancel 舊、再起新」一次過交俾 loop（見 Worker.restart_stream）。"""
+        w = self._worker
+        if w is not None and self._loop is not None and self._loop.is_running():
+            w.restart_stream(code, ktype, num, broker)
 
 
 # ─────────────────────── 🤖 P8：FETCH（本地 symbol index — 模糊輸入見 gateway/symbol_input） ───────────────────────
@@ -1004,10 +1054,13 @@ class FetchThread(QThread):
 # ─────────────────────────────── 主窗口 ───────────────────────────────
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, client_factory=None):
         super().__init__()
+        # 🧪 E2E 注入 fake client 嘅入口（無參數 → worker 自己開真 BrokerClient）
+        self._client_factory = client_factory
         self.resize(1150, 780)
         self._streaming = False   # E2E / 狀態用：有冇串流進行中
+        self._stream_req = None   # ⏳ 而家條 stream 嘅 (code,ktype) — 寫快取 / 即切都要用返同一組參數
         self.lang = 'zh'          # 🤖 P8 i18n：繁中/英文（lang_combo → _retranslate）
         self.directory = get_directory()   # 🤖 P8：本地 symbol index（disk cache）
 
@@ -1089,13 +1142,14 @@ class MainWindow(QMainWindow):
         self.panel = CollapsiblePanel(COLUMNS)
         lay.addWidget(self.panel)
 
-        self.thread = LoopThread()
+        self.thread = LoopThread(client_factory=self._client_factory)
         self.thread.worker_ready.connect(self._on_worker_ready)
         self.thread.start()
         self.test_btn.clicked.connect(self.on_test_clicked)
         self.lang_combo.currentIndexChanged.connect(self.on_lang_changed)
         self.fetch_btn.clicked.connect(self.start_fetch)
         self.code_edit.textChanged.connect(self._on_code_changed)
+        self.ktype_combo.currentTextChanged.connect(self._on_ktype_changed)   # 🔀 即切週期
 
         # 🤖 P8 startup：cache 新鮮 → 顯示 index 狀態；stale/冇 cache → background auto-fetch
         self.fetch_thread = None
@@ -1176,6 +1230,7 @@ class MainWindow(QMainWindow):
         self.lbl_broker.setText(t(L, 'lbl_broker'))
         self.test_btn.setText(t(L, 'btn_stop' if self._streaming else 'btn_start'))
         self.panel.set_lang(L)
+        self.chart.set_lang(L)   # ⏳ 加載態文案跟語言（KlineChart 內部歸一語言碼）
         self.completer.lang = L
         self.sym_label.setText(self._sym_text())
 
@@ -1226,12 +1281,37 @@ class MainWindow(QMainWindow):
         num = self.num_spin.value()
         broker = self.broker_combo.currentText().lower()
         self._streaming = True
-        for w in (self.code_edit, self.ktype_combo, self.num_spin, self.broker_combo):
+        for w in (self.code_edit, self.num_spin, self.broker_combo):   # 🔀 ktype_combo 保留可用 = 即切
             w.setEnabled(False)
         self.test_btn.setText(t(self.lang, 'btn_stop'))
         self._set_status(
             t(self.lang, 'subscribing', code=code, ktype=ktype, num=num, broker=broker), "muted")
-        self.thread.start_stream(code, ktype, num, broker)
+        self._start_stream(code, ktype, num, broker)
+
+    # 🔀 即切週期：跑緊都得改 ktype → 即刻 stop 舊、起新，唔改 _streaming / button 文案
+    def _on_ktype_changed(self, ktype: str):
+        if not self._streaming or not self.thread.worker:
+            return   # 未串流 → 等下次撳 START 先食到新週期
+        code = self.code_edit.text().strip()
+        if not code or ktype == (self._stream_req or ('', ''))[1]:
+            return
+        self._set_status(
+            t(self.lang, 'subscribing', code=code, ktype=ktype,
+              num=self.num_spin.value(), broker=self.broker_combo.currentText().lower()), "muted")
+        self._start_stream(code, ktype, self.num_spin.value(),
+                           self.broker_combo.currentText().lower(), restart=True)
+
+    def _start_stream(self, code: str, ktype: str, num: int, broker: str, restart: bool = False):
+        """起條 stream；⏳ 快取命中 → 即刻上返睇過嘅圖（唔係空白等 network），真 baseline 到咗會覆蓋。"""
+        self._stream_req = (code, ktype)
+        hit = kline_cache.get(code, ktype)
+        if hit:
+            self.chart.set_bars(hit)
+        self.chart.set_busy(True)   # ⏳ 取數期間加暗 + LOADING（baseline / done 到咗就收）
+        if restart:
+            self.thread.restart_stream(code, ktype, num, broker)
+        else:
+            self.thread.start_stream(code, ktype, num, broker)
 
     def _on_update(self, p: dict):
         phase = p["phase"]
@@ -1240,6 +1320,8 @@ class MainWindow(QMainWindow):
             rows = [(r["time_key"], r["open"], r["high"], r["low"], r["close"], r["volume"])
                     for r in records]
             self.chart.set_bars(rows)
+            if self._stream_req and rows:   # ⏳ baseline / tick / 兩段式完整快照都寫 → 快取永遠係最新見到嘅快照
+                kline_cache.put(*self._stream_req, rows)
             self.panel.set_dataframe(records)   # 🧹 內部先清空再填
             self._update_price(records)         # 📢 大字現價 + 刷新閃一下
             last_t = str(records[-1]["time_key"]) if records else "—"
@@ -1247,15 +1329,17 @@ class MainWindow(QMainWindow):
             self.time_label.setText(
                 t(self.lang, 'last_push', now=time.strftime('%H:%M:%S'), bar=_short_time(last_t)))
             if phase == "baseline":
+                self.chart.set_busy(False)   # ⏳ 首幀上咗圖 → 收加載態
                 self._set_status(t(self.lang, 'baseline_ok', n=p['n_rows']), "ok")
             else:
                 self._set_status(
                     t(self.lang, 'streaming', ticks=p['ticks'], n=p['n_rows'], last_t=last_t), "muted")
         elif phase == "done":
+            self.chart.set_busy(False)   # ⏳ 出錯/停止都要收，否則會永遠 LOADING
             self.time_label.setText("—")
             self._streaming = False
             for w in (self.code_edit, self.ktype_combo, self.num_spin, self.broker_combo):
-                w.setEnabled(True)
+                w.setEnabled(True)   # 🔀 ktype_combo 一直 enabled，呢度係冪等
             self.test_btn.setText(t(self.lang, 'btn_start'))
             if p.get("error"):
                 self._set_status(f"❌ {p['error']}" + t(self.lang, 'err_suffix'), "err")

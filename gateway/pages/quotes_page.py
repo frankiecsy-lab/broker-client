@@ -37,7 +37,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject  # noqa: E402
+from PySide6.QtCore import Qt, QTimer, Signal, QObject  # noqa: E402
 from PySide6.QtWidgets import QApplication, QButtonGroup, QMenu, QPushButton, QWidget  # noqa: E402
 
 from gateway.pages import gui_kline as gk  # noqa: E402 — 同目錄 app 組件：重用 KlineChart / _fmt_big
@@ -45,9 +45,11 @@ import gateway.indicators as indicators  # noqa: E402 — #27：IndicatorKlineCh
 import gateway.theme as theme_mod  # noqa: E402
 from gateway import state_store  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
+from gateway.kline_stream import ClientHolderMixin, LoopThreadBase  # noqa: E402 — ⏳ stream 基建（同 K 線頁共用一份）
 from gateway.symbol_input import attach_symbol_input, make_search  # noqa: E402 — 全域模糊輸入
 from gateway.ui.bind import apply_text, stamp  # noqa: E402
 from gateway.ui.loader import apply_ui, register_custom  # noqa: E402
+from modules import kline_cache  # noqa: E402 — ⏳ K 線取數快取（純 stdlib，唔會拖慢啟動）
 
 register_custom(indicators.IndicatorKlineChart)   # chart_cell.ui promote 呢個自繪 widget（見 loader._CUSTOM）
 
@@ -80,32 +82,19 @@ def _rows_from_df(df):
 
 # ─────────────────────────── 串流 worker（多路並發） ───────────────────────────
 
-class GridWorker(QObject):
-    """住喺 worker thread；只發 signal，唔碰 widget。多格 stream 並發（futu 每條自開連線）。
-    多路 + token pattern 照 gui_fulltest.TestWorker（_live_tasks / _next_tick_token）。"""
+class GridWorker(QObject, ClientHolderMixin):
+    """住喺 worker thread；只發 signal，唔碰 widget。多格 stream 並發（futu 全部共用一條連線，見
+    `modules/futu_client`）。多路 + token pattern 照 gui_fulltest.TestWorker（_live_tasks / _next_tick_token）。
+    ⏳ loop / client 生命週期喺 `gateway/kline_stream`（同 K 線頁共用一份）。"""
 
     cell_update = Signal(int, int, object)   # (cell_id, token, {'phase': baseline|tick|error[, 'df'|'error']})
 
     def __init__(self, loop, client_factory=None):
         super().__init__()
-        self._loop = loop
-        self._client_factory = client_factory   # e2e 注入 fake（hermetic 唔打網絡）
-        self._client = None
-        self._client_lock = asyncio.Lock()      # 並發首調 ensure_client 序列化（IB clientId 安全）
+        # client / loop / shutdown 契約全部喺 gateway/kline_stream（同 K 線頁共用）
+        self.init_client_holder(loop, client_factory)   # client_factory：e2e 注入 fake（hermetic 唔打網絡）
         self._live_tasks = {}                   # cell_id → consume task（每格最多一條 live stream）
         self._consume_tasks = set()
-        self._shutting_down = False
-
-    async def ensure_client(self):
-        async with self._client_lock:
-            if self._client is None:
-                client = self._client_factory() if self._client_factory is not None else None
-                if client is None:   # late-bind factory 而家返 None → 真 BrokerClient
-                    from modules.broker import BrokerClient   # lazy — import 拖慢 UI 啟動
-                    client = BrokerClient()
-                self._client = client
-                await self._client.__aenter__()
-        return self._client
 
     # --- GUI-thread facade ---
     # token 由 GUI 派（每次 start/stop 都 bump）：worker 只 echo 返 —
@@ -168,7 +157,9 @@ class GridWorker(QObject):
             old.cancel()
             await asyncio.gather(old, return_exceptions=True)
 
-    async def _cancel_all(self):
+    async def _cancel_work(self):
+        """被 `ClientHolderMixin.shutdown()` call：cancel 晒所有格嘅 consumer → 等 broker 端退訂閱完成，
+           先輪到 `release_client()`。"""
         tasks = list(self._consume_tasks)
         for t in tasks:
             if not t.done():
@@ -176,61 +167,11 @@ class GridWorker(QObject):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def shutdown(self):
-        if self._shutting_down:
-            return
-        self._shutting_down = True
-        await self._cancel_all()
-        if self._client is not None:
-            try:
-                await self._client.__aexit__(None, None, None)
-            except Exception as e:
-                logging.warning('broker cleanup failed: %s', e)
-            self._client = None
-        if self._loop.is_running():
-            self._loop.stop()
 
+class _LoopThread(LoopThreadBase):
+    """行情頁嘅 stream 橋：loop 生命週期見 `gateway/kline_stream.LoopThreadBase`。"""
 
-class _LoopThread(QThread):
-    """擁有 event loop + GridWorker；GUI thread 嘅 facade（同 gui_kline / fulltest 同一 pattern）。"""
-
-    worker_ready = Signal(object)
-
-    def __init__(self, client_factory=None, parent=None):
-        super().__init__(parent)
-        self._client_factory = client_factory
-        self._worker = None
-        self._loop = None
-        self._stop_requested = False
-
-    def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._worker = GridWorker(loop, self._client_factory)   # 喺呢條 thread 建 → signal 自動 queue 去 GUI
-        try:
-            self.worker_ready.emit(self._worker)
-            if self._stop_requested:
-                loop.run_until_complete(self._worker.shutdown())
-                return
-            loop.run_forever()
-        finally:
-            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-            for t in pending:
-                t.cancel()
-            if pending:
-                try:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except Exception:
-                    pass
-            loop.close()
-
-    def request_shutdown(self):
-        loop, w = self._loop, self._worker
-        if loop is not None and w is not None and loop.is_running():
-            asyncio.run_coroutine_threadsafe(w.shutdown(), loop)
-        else:
-            self._stop_requested = True
+    worker_cls = GridWorker
 
 
 # ─────────────────────────── 單格 ChartCell ───────────────────────────
@@ -445,14 +386,25 @@ class QuotesPage(QWidget):
         self._next_token += 1
         return self._cell_token[cid]
 
-    def _start_cell_stream(self, cid):
-        if self._worker is None:
-            return
+    def _cell_key(self, cid):
+        """呢格而家嘅 (canonical code, ktype)；冇效代碼 → None（取數同快取用同一把尺）。"""
         stt = self.cells[cid].state()
         code = stt['symbol']
         if not code or not _CODE_RE.match(code):
+            return None
+        return self._canonical_code(code), stt['period']
+
+    def _start_cell_stream(self, cid):
+        if self._worker is None:
             return
-        self._worker.start_cell(cid, self._bump_token(cid), self._canonical_code(code), stt['period'])
+        key = self._cell_key(cid)
+        if key is None:
+            return
+        cached = kline_cache.get(*key)
+        if cached:   # ⏳ 命中 → 即刻上返睇過嘅圖（唔係空白等 network）；真 baseline 到咗會覆蓋
+            self.cells[cid].show_rows(cached)
+        self.cells[cid].chart.set_busy(True)   # ⏳ baseline 到咗先收（_on_cell_update）
+        self._worker.start_cell(cid, self._bump_token(cid), key[0], key[1])
 
     def _restart_visible_cells(self):
         for cid in self._visible_cell_ids():
@@ -581,12 +533,14 @@ class QuotesPage(QWidget):
         if not code:
             if self._worker is not None:
                 self._worker.stop_cell(cid)
+            cell.chart.set_busy(False)   # ⏳ 冇新 stream → 要收，否則會永遠 LOADING
             cell.clear_chart()
             self._save_state()
             return
         if not _CODE_RE.match(code):
             if self._worker is not None:
                 self._worker.stop_cell(cid)   # 舊標的嘅 stream 都停 — 唔好讓舊價蓋住錯誤 label
+            cell.chart.set_busy(False)
             cell.show_error(t('quotes_invalid_code', self._lang))
             self._save_state()
             return
@@ -606,10 +560,15 @@ class QuotesPage(QWidget):
         phase = payload.get('phase')
         if phase == 'error':
             cell.show_error(f'❌ {payload.get("error", "?")}')
+            cell.chart.set_busy(False)   # ⏳ 出錯都要收，否則會永遠 LOADING
             return
         rows = _rows_from_df(payload['df'])
         if phase == 'baseline':
             cell.show_rows(rows)   # baseline 即刻上圖
+            cell.chart.set_busy(False)
+            key = self._cell_key(cid)   # ⏳ 寫入快取 → 下次切返呢個 (代碼,週期) 即刻有圖
+            if key:
+                kline_cache.put(*key, rows)
             return
         # live tick：價即時，redraw throttle（同 fulltest TICK_UI_INTERVAL）
         self._pending_df[cid] = rows
@@ -626,6 +585,10 @@ class QuotesPage(QWidget):
         rows = self._pending_df.pop(cid, None)
         if rows:
             self.cells[cid].show_rows(rows)
+            # ⏳ live tick 同兩段式嘅完整快照都經呢條路 → 快取永遠係最新見到嘅快照（throttle 後 ≤4Hz，唔會狂寫）
+            key = self._cell_key(cid)
+            if key:
+                kline_cache.put(*key, rows)
 
     # ── 本地記憶（統一 state_store，邊改邊 save）──
     def _save_state(self):
@@ -649,6 +612,7 @@ class QuotesPage(QWidget):
             accent=pal['accent'], accent_pressed=pal['accent_pressed']))
         for cell in getattr(self, 'cells', []):
             cell.chart.readout.setStyleSheet(f'color: {gk.C_MUTED}; font-size: 12px; background: transparent;')
+            cell.chart._restyle_overlay()   # ⏳ 加載 scrim 跟 palette（未砌疊層就唔使理）
             cell.chart._redraw()
 
     def _on_theme_changed(self, name):
@@ -661,6 +625,7 @@ class QuotesPage(QWidget):
         for cell in getattr(self, 'cells', []):
             cell.cell_symbol.setPlaceholderText(t('quotes_symbol_ph', lang))   # 逐格 placeholder
             cell.completer.lang = lang   # 🤖 display_for 直接食 GUI 語言碼（zh_cn 唔會再被轉做繁體）
+            cell.chart.set_lang(lang)    # ⏳ 加載態文案跟語言
 
     def retranslate(self, lang):
         self._lang = lang

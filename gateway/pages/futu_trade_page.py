@@ -298,7 +298,7 @@ class _FutuTradeWorker(QThread):
 
     def _ensure_price_handler(self):
         """K_1M push handler（lazy，掛喺 qctx）— 收到 bar 更新即刻用最新 close emit 'price_tick'。
-        同 futu_client.MyCurKlineHandler 同一 pattern：SDK callback thread → Qt signal（queued）。
+        同 futu_client.KlineRouter 同一 pattern：SDK callback thread → Qt signal（queued）。
         （實測呢個 OpenD：QUOTE subtype push 永遠唔到，K 線 push 正常流 — 所以市價行 K 線 push。）"""
         if self._price_handler is not None:
             return self._price_handler

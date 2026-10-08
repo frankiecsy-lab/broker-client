@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>kline_overlay</class>
+ <!-- ⏳ K 線圖加載態疊層 — `KlineChart` 惰性載入（load_ui fragment，照 strategy_rule_row.ui 先例）。
+      一份覆蓋 K 線頁 1 個圖 + 行情頁 6 格（全部同一個 KlineChart 類）。
+      只定義控件：scrim 加暗配色由 `KlineChart._restyle_overlay()` 跟 theme 現算（`.ui` 帶唔住 rgba），
+      文字屬裝飾 → 一律經 i18n（`KlineChart.set_lang`）。
+      單格 QGridLayout + QLabel alignment=AlignCenter → 文字永遠喺 canvas 正中，唔使 stretch item。 -->
+ <widget class="QWidget" name="kline_overlay">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>300</height>
+   </rect>
+  </property>
+  <layout class="QGridLayout" name="overlayLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <property name="spacing"><number>0</number></property>
+   <item row="0" column="0">
+    <widget class="QLabel" name="kline_loading">
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+     <property name="text"><string>載入中…</string></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

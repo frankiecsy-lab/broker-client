@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import math
+import threading
 from datetime import date, timedelta
 from futu import *
 import pandas as pd
-import queue
 import queue
 
 from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
@@ -15,24 +15,32 @@ logging.getLogger('futu').setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)   # 🤖 P5：print → logging（app-level config 喺 modules/__init__.py）
 
-class MyCurKlineHandler(CurKlineHandlerBase):
-    def __init__(self, normalize=None, ktype=None):
-        super(MyCurKlineHandler, self).__init__()
-        # 📦 建立一個小緩存區，用來存放剛推過來的即時數據（已 normalize）
-        # B3 fix: queue.Queue 本身 thread-safe — SDK callback thread put / asyncio loop get 互不干涉
-        self.data_buffer = queue.Queue()
+class KlineRouter(CurKlineHandlerBase):
+    """🔀 一個 handler 掛喺**共享** ctx：按 push 自帶嘅 `(code, k_type)` 分派落各條 stream 自己嘅 queue。
+       ⚠️ 分派必須喺 `_normalize_kline` **之前**做 — normalize 會 drop 咗 `code` 欄（見 FutuClient._normalize_kline）。
+       同一對 (code,ktype) 可以有幾條 stream（行情頁兩格設同一標的同一週期）→ fan-out 落每個 queue，各自 drain 自己嗰份。
+       B3 fix: queue.Queue 本身 thread-safe — SDK callback thread put / asyncio loop get 互不干涉。"""
+
+    def __init__(self, normalize, sinks):
+        super().__init__()
         self._normalize = normalize
-        self.ktype = ktype
+        self._sinks = sinks   # (code, ktype) -> list[queue.Queue]（由 FutuClient 持有，邊界處只讀）
 
     def on_recv_rsp(self, rsp_pb):
-        ret_code, content = super(MyCurKlineHandler, self).on_recv_rsp(rsp_pb)
+        ret_code, content = super().on_recv_rsp(rsp_pb)
         if ret_code == RET_OK and content is not None and not content.empty:
-            # 取最新 bar，normalize 後塞進緩存區（tail(1) 本身係 copy，可以放心改）
-            latest_bar = content.tail(1)
-            if self._normalize is not None:
-                latest_bar = self._normalize(latest_bar, self.ktype)
-            # 等待外層 stream_kline 撈走拼接入 K 線表
-            self.data_buffer.put(latest_bar)
+            if 'code' not in content.columns or 'k_type' not in content.columns:
+                # 🤖 呢個 SDK 版本嘅 push 冇咗路由欄 → 如實唔派（亂派會畫錯格），等上层靠 snapshot/tick 照樣更新
+                logger.warning('FUTU push 缺少 code/k_type 欄，無法路由到 stream：%s', list(content.columns))
+                return ret_code, content
+            # 一次 push 可能跨標的 → 逐 (code,ktype) 組各取自己最新嗰根（tail(1) 本身係 copy，可以放心改）
+            for (code, ktype), grp in content.groupby(['code', 'k_type'], sort=False):
+                q_list = self._sinks.get((str(code), str(ktype)))
+                if not q_list:
+                    continue   # 已 unsubscribe / 而家冇人收 → 如實丟咗
+                bar = self._normalize(grp.tail(1), str(ktype))
+                for q in list(q_list):
+                    q.put(bar)   # 等待外層 stream_kline 撈走拼接入 K 線表
 
         # 這裡的 return 是富途 SDK 內部的規定，我們保持原樣即可
         return ret_code, content
@@ -46,18 +54,115 @@ class FutuClient(BrokerBase):
         self.host = self.config.get("host", "127.0.0.1")
         self.port = self.config.get("port", 11111)
         self.kline_num = self.config.get("kline_num", 1000)
+        # ⏳ 兩段式取數第一段根數（0 / 唔設 = 關兩段式，一次過取 kline_num）
+        self.kline_num_first = int(self.config.get("kline_num_first", 0) or 0)
+        # 🔌 共享連線狀態（見 _ensure_ctx）：_subs = 訂閱 refcount，_queues = 每條 stream 專屬 push queue
+        self._lock = threading.RLock()
+        self._shared_ctx = None
+        self._shared_handler = None
+        self._shared_dead = False
+        self._subs = {}
+        self._queues = {}
 
     async def __aenter__(self):
-        # 🤖 共享 context 已廢：而家每條 stream / 每次 get_kline 用獨立連線（見 _new_ctx）
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return False
 
-    def _new_ctx(self):
-        # 🤖 每條 stream / 每次 get_kline 開一條獨立 OpenQuoteContext
-        # （OpenD 支援多條並發連線；每個 context 有自己 handler，8 條互不干擾）
+    def _open_ctx(self):
+        """全檔唯一開 `OpenQuoteContext` 嘅位（一次 construction = 一次 OpenD handshake）。
+           邊度會開：① `_ensure_ctx()` — 所有 stream 共用，全程序一次 ② `get_kline()` — 一次性取數，用完即斷。"""
         return OpenQuoteContext(host=self.host, port=self.port)
+
+    # ══════════ 🔌 共享 OpenQuoteContext（P3）══════════
+    # 🤖 舊設計：每條 stream / 每次 get_kline 各開一條連線（OpenD 支援並發、handler 各自獨立）。
+    #    實測成本：行情頁 6 格 = 13 次 handshake，全部串行排喺同一個 event loop 前面 → 六格同時切要 5.8 秒。
+    #    新契約：所有 stream 共用**一條** ctx + 一個 handler（按 (code,k_type) 路由），訂閱按 refcount 增減。
+    def _ensure_ctx(self):
+        """lazy 開一條共享 ctx。開唔到 / 被 OpenD 斷（exception）→ 標 `_shared_dead`，下次呢度重開。
+           ⚠️ 會被幾個 to_thread worker 同時入 → 全程攞 `self._lock`（連 constructor 都喺 lock 內，先保證得返一條）。"""
+        with self._lock:
+            if self._shared_ctx is not None and not self._shared_dead:
+                return self._shared_ctx
+            if self._shared_ctx is not None:   # 死咗 → 清乾淨先重開
+                self._drop_shared()
+            self._shared_ctx = self._open_ctx()
+            self._shared_handler = KlineRouter(normalize=self._normalize_kline, sinks=self._queues)
+            self._shared_ctx.set_handler(self._shared_handler)
+            self._shared_dead = False
+            logger.info('FUTU: 開咗共享 OpenQuoteContext %s:%s', self.host, self.port)
+            return self._shared_ctx
+
+    def _drop_shared(self):
+        """收返共享 ctx（调用者必須已經攞住 lock）。"""
+        ctx, self._shared_ctx = self._shared_ctx, None
+        self._shared_handler = None
+        self._subs.clear()
+        self._queues.clear()
+        if ctx is not None:
+            try:
+                ctx.set_handler(None)
+            except Exception:
+                pass
+            try:
+                ctx.close()
+            except Exception:
+                pass
+
+    def _acquire(self, code, ktype):
+        """攞 (共享 ctx, 呢條 stream 專屬 push queue)。refcount 0→1 先真 `subscribe`。
+           失敗 → raise，由 caller 經 `(False, None, msg)` 如實回報。
+           ⚠️ 入面係同步 network 呼叫 → caller 必須 `await asyncio.to_thread(self._acquire, ...)`。"""
+        key = (code, ktype)
+        with self._lock:
+            ctx = self._ensure_ctx()
+            if self._subs.get(key, 0) == 0:
+                try:
+                    ret, msg = ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
+                except Exception as e:
+                    # 🤖 只有 transport 層異常先當連線死咗（權限 / 參數類 RET_ERROR 唔關連線事 —
+                    #    亂標 dead 會連其他 live stream 一併拆走）
+                    live = sum(self._subs.values())
+                    self._shared_dead = True
+                    self._drop_shared()
+                    if live:
+                        logger.warning('FUTU: 共享連線斷咗，%d 條 live stream 會收唔到 push（下次取數自動重開連線）', live)
+                    raise ConnectionError(f'訂閱異常 {type(e).__name__}: {e}') from e
+                if ret != RET_OK:
+                    raise ConnectionError(f'訂閱失敗 {msg}')
+                self._subs[key] = 1
+            else:
+                self._subs[key] += 1
+            q = queue.Queue()
+            self._queues.setdefault(key, []).append(q)
+            return ctx, q
+
+    def _release(self, code, ktype, q):
+        """stream 結束（正常 / cancel / 錯誤）→ refcount 減一，歸零先 unsubscribe。
+           ⚠️ **唔會 close 共享 ctx** — 其他 stream 仲用緊；真正收線由 `disconnect()` 負責。"""
+        key = (code, ktype)
+        with self._lock:
+            sinks = self._queues.get(key)
+            if sinks is not None and q in sinks:
+                sinks.remove(q)
+            n = self._subs.get(key, 1) - 1
+            if n > 0:
+                self._subs[key] = n
+                return
+            self._subs.pop(key, None)
+            self._queues.pop(key, None)
+            if self._shared_ctx is not None and not self._shared_dead:
+                try:
+                    self._shared_ctx.unsubscribe([code], [ktype])
+                except Exception as e:
+                    logger.warning('FUTU: unsubscribe %s %s 失敗 %s', code, ktype, e)
+
+    async def disconnect(self):
+        """🤖 收返共享連線 — `BrokerClient.__aexit__` 已經會循環調每個 client 嘅 `disconnect()`，上層零改動。"""
+        with self._lock:
+            self._drop_shared()
+            self._shared_dead = False
 
     def _normalize_kline(self,data,ktype):
         # B4 fix: 先 copy 再改，唔會 mutate caller 傳入嘅 df
@@ -81,7 +186,8 @@ class FutuClient(BrokerBase):
     # （富途服務端硬限制：get_cur_kline num 最大 1000、request_history_kline 單次 max_count 最大 1000）
     async def _fetch_kline(self, quote_ctx, code, ktype, kline_num):
         if int(kline_num) <= 1000:
-            return quote_ctx.get_cur_kline(code, int(kline_num), ktype, AuType.QFQ)
+            # 🧵 futu 係同步呼叫 → 落 worker thread：一格取數唔會阻塞住其他格嘅 push / baseline
+            return await asyncio.to_thread(quote_ctx.get_cur_kline, code, int(kline_num), ktype, AuType.QFQ)
 
         # >1000：估算一個夠闊嘅日曆窗口（按每交易日最多 bar 數 + 週末假日緩衝），再逐頁撳
         bars_per_day = {
@@ -95,9 +201,10 @@ class FutuClient(BrokerBase):
 
         frames, page_req_key = [], None
         while True:
-            ret, data, page_req_key = quote_ctx.request_history_kline(
-                code, str(start_dt), str(end_dt), ktype=ktype, autype=AuType.QFQ,
-                max_count=1000, page_req_key=page_req_key, session=Session.ALL)
+            # 🧵 同上：分頁都唔喺 event loop 上面行同步呼叫
+            ret, data, page_req_key = await asyncio.to_thread(
+                quote_ctx.request_history_kline, code, str(start_dt), str(end_dt),
+                ktype=ktype, autype=AuType.QFQ, max_count=1000, page_req_key=page_req_key, session=Session.ALL)
             if ret != RET_OK:
                 return ret, data   # 失敗形狀同 get_cur_kline 一致：(ret, err_msg)
             frames.append(data)
@@ -114,7 +221,8 @@ class FutuClient(BrokerBase):
         logger.info('FUTU get_kline')
         status=False
         data, message=None,None
-        quote_ctx = self._new_ctx()  # 🤖 獨立連線，用完即斷
+        # 🤖 一次性取數：用獨立連線，唔使 push、唔同 stream 搶訂閱配額，用完即斷最簡單
+        quote_ctx = self._open_ctx()
         try:
             ret_sub, err_message = quote_ctx.subscribe([code], [ktype], subscribe_push=False,
                                                        session=Session.ALL)
@@ -143,44 +251,45 @@ class FutuClient(BrokerBase):
     async def stream_kline(self, code, ktype, kline_num=None):
         """同 get_kline 一樣回傳 (status, data, message)：
            - status=True → data 係 async generator（第一次 yield = baseline，之後每筆 push = live tick）；
-             consumer 用 `async for df in data` 消費，停止 = cancel task / .aclose()（finally 會斷呢條 stream 專用連線）
-           - status=False → data=None、message 係失敗原因（訂閱權限 / 歷史取數 / OpenD 連線）"""
+             consumer 用 `async for df in data` 消費，停止 = cancel task / .aclose()（finally 會 release 呢條 stream 嘅訂閱）
+           - status=False → data=None、message 係失敗原因（訂閱權限 / 歷史取數 / OpenD 連線）
+           - ⏳ 兩段式（config futu.kline_num_first > 0 且 < kline_num 先觸發）：baseline 只帶 kline_num_first 根，
+             完整 kline_num 根會喺首幀之後以**多一次快照**送出 → 對 consumer 嚟講只係多一次 tick，契約唔變。
+           - 🔌 連線契約（P3 改咗）：所有 stream **共用一條** `OpenQuoteContext` + 一個 `KlineRouter`，
+             訂閱按 `(code,ktype)` refcount 增減。舊設計每條 stream 各開一條連線 → 行情頁 6 格 = 13 次
+             handshake 排喺 event loop 前面（實測六格同時切 5.8 秒）；共用之後得返 1 次。
+             收線由 `disconnect()` 負責，stream 結束唔 close 共享 ctx。"""
         if kline_num is None:
             kline_num = self.kline_num
-        # 🤖 獨立 OpenQuoteContext：呢條 stream 專用，唔會同其他 stream 撞 handler / 連線
-        quote_ctx = self._new_ctx()
+        # ⏳ 兩段式：第一段只取 kline_num_first（夠即刻上圖），完整 kline_num 喺首幀之後背景補取。
+        #    取數量同 `KlineChart.MAX_DRAW` 對齊 → 首圖唔使等 1000 根嘅 round-trip。
+        first_num = min(int(kline_num), self.kline_num_first) if self.kline_num_first > 0 else int(kline_num)
 
-        # Setup 階段（掛 handler + 訂閱 push + 取歷史）— 任何失敗都經 status/message 回報並即刻 close，唔留半訂閱狀態
+        # Setup 階段（共享連線 + 訂閱 push + 取歷史）— 任何失敗都經 status/message 回報，唔留半訂閱狀態
         try:
             logger.info("FUTU stream_kline...")
-            # 1️⃣ 先掛 handler 再訂閱 push — subscribe 之後每一筆推送都有人收，唔會漏 tick
-            # 🤖 handler 收到 push 即刻 normalize，buffer 入面存嘅就係標準 6 欄 df
-            handler = MyCurKlineHandler(normalize=self._normalize_kline, ktype=ktype)
-            quote_ctx.set_handler(handler)
+            # 1️⃣ 攞共享 ctx + 呢條 stream 專屬 push queue（refcount 0→1 先真 subscribe）
+            # 🧵 入面係同步 network round-trip → 落 worker thread（多格同時起 stream 先唔會互相排隊）
+            quote_ctx, push_q = await asyncio.to_thread(self._acquire, code, ktype)
+        except Exception as e:   # 🤖 OpenD 未開 / 連線被拒 / 訂閱失敗等 → 一樣經 status/message 回報
+            return False, None, f"FUTU stream_kline: {e}"
 
-            # 2️⃣ 訂閱 push — 冇 subscribe，OpenD 唔會推任何數據落 handler，buffer 永遠係空
-            ret_sub, err_msg = quote_ctx.subscribe([code], [ktype], subscribe_push=True, session=Session.ALL)
-            if ret_sub != RET_OK:
-                quote_ctx.close()   # 🤖 setup 失敗 → 即刻斷呢條專用連線，唔會漏
-                return False, None, f"FUTU stream_kline: 訂閱失敗 {err_msg}"
-
-            # 3️⃣ 取歷史 K 線做初始底表（HISTORY）— B2 fix: 直接用呢條 stream 自己嘅連線，唔多開一條；>1000 自動切分頁
-            ret, data = await self._fetch_kline(quote_ctx, code, ktype, kline_num)
-            if ret != RET_OK:
-                quote_ctx.close()   # 🤖 setup 失敗 → 即刻斷呢條專用連線，唔會漏
-                return False, None, f"FUTU stream_kline: 歷史 K 線取得失敗 {data}"
-        except Exception as e:   # 🤖 OpenD 未開 / 連線被拒等 exception → 一樣經 status/message 回報
-            try:
-                quote_ctx.close()
-            except Exception:
-                pass
+        # 2️⃣ 取歷史 K 線做初始底表（HISTORY）— B2 fix: 直接用呢條 stream 所屬嘅連線，唔多開一條；>1000 自動切分頁
+        #    ⏳ 兩段式：呢度只取 first_num（完整根數喺首幀上圖後背景補，見 _stream）
+        try:
+            ret, data = await self._fetch_kline(quote_ctx, code, ktype, first_num)
+        except Exception as e:
+            self._release(code, ktype, push_q)
             return False, None, f"FUTU stream_kline: {type(e).__name__}: {e}"
+        if ret != RET_OK:
+            self._release(code, ktype, push_q)   # 🤖 setup 失敗 → 即刻退返訂閱，唔會漏
+            return False, None, f"FUTU stream_kline: 歷史 K 線取得失敗 {data}"
 
         history_df = self._normalize_kline(data, ktype)
-        # 🤖 P3：baseline 驗 schema — 唔符合就斷呢條專用連線並當失敗回報
+        # 🤖 P3：baseline 驗 schema — 唔符合就退返訂閱並當失敗回報
         ok, why = validate_kline(history_df)
         if not ok:
-            quote_ctx.close()
+            self._release(code, ktype, push_q)
             return False, None, f"FUTU stream_kline: K 線 schema 驗證失敗 {why}"
 
         async def _stream():
@@ -189,12 +298,28 @@ class FutuClient(BrokerBase):
                 yield history_df
                 kline_df = history_df.copy()
 
+                if first_num < int(kline_num):
+                    # ⏳ 第二段：首幀已上圖，背景先補返完整 kline_num 根 → 再 yield 一次完整快照。
+                    #    consumer 現有嘅 `n == 1 → baseline，其後 → tick` 自動當呢次係一次重繪 → GUI 零改動，
+                    #    而 MAX_VIEW 嘅 zoom-out 深度唔減（呢個就係揀兩段式而唔係直接砍到 300 嘅原因）。
+                    #    補取失敗唔折騰整條 stream（用戶已經有圖）→ 只 log，繼續收 push。
+                    try:
+                        ret2, data2 = await self._fetch_kline(quote_ctx, code, ktype, kline_num)
+                        full = self._normalize_kline(data2, ktype) if ret2 == RET_OK else None
+                        if full is not None and validate_kline(full)[0]:
+                            kline_df = full   # 整份取代（唔 concat：兩段重疊會重複同一啲 bar）
+                            yield kline_df.copy()
+                        else:
+                            logger.warning("FUTU stream_kline: 補取完整 %s 根失敗，維持 %s 根", kline_num, first_num)
+                    except Exception as e:
+                        logger.warning("FUTU stream_kline: 補取完整 K 線異常 %s: %s", type(e).__name__, e)
+
                 while True:
                     yielded = False
                     # 🤖 關鍵檢查（B1 fix）：每圈 drain 晒 buffer 所有待處理 bar — 高頻 push 都唔會無界增長
                     while True:
                         try:
-                            latest_bar = handler.data_buffer.get_nowait()
+                            latest_bar = push_q.get_nowait()
                         except queue.Empty:
                             break
                         tk = latest_bar['time_key'].iloc[0]
@@ -223,12 +348,10 @@ class FutuClient(BrokerBase):
                 logger.info("🛑 [Futu PUSH] 接收到終止指令，正在關閉監聽事件...")
                 raise  # 🤖 保留取消語義：上層 task.cancel() 先可以正確結束
             finally:
-                # 🤖 安全拔線：清 handler + 斷呢條 stream 專用連線
-                try:
-                    quote_ctx.set_handler(None)
-                except Exception:
-                    pass
-                quote_ctx.close()
+                # 🤖 安全拔線：退返呢條 stream 嘅訂閱（refcount 歸零先 unsubscribe）。
+                #    同步、唔 await — 被 cancel 嘅 generator 入面 await 有風險，而且其他 stream 仲用緊共享 ctx，
+                #    真正收線由 `disconnect()` 負責。
+                self._release(code, ktype, push_q)
 
         return True, _stream(), None
 

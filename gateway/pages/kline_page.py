@@ -153,6 +153,7 @@ class KlinePage(QWidget):
         win.chart.canvas.figure.set_facecolor(gk.C_SURFACE)   # Figure facecolor 係 KlineChart.__init__ bake
         win.chart.readout.setStyleSheet(
             f"color: {gk.C_MUTED}; font-size: 12px; background: transparent;")
+        win.chart._restyle_overlay()   # ⏳ 加載 scrim 跟 palette（未砌疊層就唔使理）
         win.panel.btn.setStyleSheet(
             f"color: {gk.C_ACCENT}; font-weight: bold; text-align: left; border: none;"
             f" background: transparent; padding: 2px;")
