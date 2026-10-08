@@ -1,4 +1,4 @@
-"""One Gate Page 2 — 全功能測試（嵌入 `test/gui_fulltest.py` 全部功能）。
+"""One Gate Page 2 — 全功能測試（嵌入 `gateway/pages/gui_fulltest.py` 全部功能）。
 
 嵌入模式（ticket #04，**零改動 gui_fulltest.py 本身**）：
 - 建一個隱藏 top-level `gui_fulltest.MainWindow()` 並保留 Python 引用 alive（`self._win`）—
@@ -23,17 +23,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# gui_fulltest 住喺 test/ — 加埋該目錄入 import path（同 e2e script 同一 convention；
-# gui_fulltest 本身 import 時會將 project root 放落 sys.path，佢嘅 modules.* import 自然通）
-_TEST_DIR = os.path.join(_ROOT, 'test')
-if _TEST_DIR not in sys.path:
-    sys.path.insert(0, _TEST_DIR)
-
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication, QTableWidget, QVBoxLayout, QWidget  # noqa: E402
 
-import gui_fulltest as gf  # noqa: E402 — test/gui_fulltest.py（本檔對佢零改動）
+from gateway.pages import gui_fulltest as gf  # noqa: E402 — 同目錄 app 組件（本檔對佢零改動）
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
 
 # ── 結果狀態色：light = gui_fulltest 原值（淺底設計），dark = 提亮變體（深底可讀）──

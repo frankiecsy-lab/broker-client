@@ -10,7 +10,7 @@
 - stream 行持續 live：第一次 yield = 歷史 baseline（收到 → 即刻出 verdict ✅ PASS），之後 live tick 持續更新結果格 + 數據表，到 Stop / 重跑為止（0 tick 唔算 fail — 可能冇成交時段 / IB 無 RTUS）
 - worker thread 擁有一個 app-lifetime BrokerClient；closeEvent 釋放 IB clientId=99
 
-Run: python test/gui_fulltest.py   （需要 OpenD + TWS/IB Gateway 開緊）
+Run: python gateway/pages/gui_fulltest.py   （需要 OpenD + TWS/IB Gateway 開緊）
 """
 import asyncio
 import logging
@@ -18,7 +18,7 @@ import os
 import sys
 import time
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 本檔喺 gateway/pages/
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -443,6 +443,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self.table)
         self.setCentralWidget(central)
 
+        self.hide_ef_btn.setChecked(True)   # 🤖 用戶要求：默認隱藏 EXPECTED FAIL（toggled → 連文字反轉）
+
         self.thread = LoopThread(self)
         self.thread.worker_ready.connect(self._on_worker_ready)
         self.thread.start()
@@ -471,6 +473,7 @@ class MainWindow(QMainWindow):
         h.setSpacing(8)
         btn = QPushButton("▶")
         btn.setFixedWidth(34)
+        btn.setEnabled(False)   # 🤖 用戶要求：未開始（worker 未 ready）要灰 — _sync_run_controls 統一放行
         btn.clicked.connect(lambda checked=False, idx=i: self.run_row(idx))
         lbl = QLabel(f"<b>{spec['broker']} · {spec['name']}</b><br>"
                      f"<span style='color:#777'>{spec['intro']}</span>")
@@ -511,10 +514,20 @@ class MainWindow(QMainWindow):
         self._data_tables.append(data_tbl)
 
     # --- worker bridge ----------------------------------------------------------
+    def _sync_run_controls(self):
+        """🤖 用戶要求：未開始要灰 — 按鈕狀態機（唯一出入口）：
+        worker 未 ready = 全部灰；idle = Run All / 每行 ▶ 亮、Stop 灰；
+        運行中 = Stop 亮、Run All 灰（防重入）、運行中嗰行 ▶ 灰。"""
+        ready = self._worker is not None
+        running = bool(self._inflight)
+        self.run_all_btn.setEnabled(ready and not running)
+        self.stop_btn.setEnabled(running)
+        for i, b in enumerate(self._row_btns):
+            b.setEnabled(ready and i not in self._inflight)
+
     def _on_worker_ready(self, worker: TestWorker):
         self._worker = worker
-        self.run_all_btn.setEnabled(True)
-        self.stop_btn.setEnabled(True)
+        self._sync_run_controls()
         self.progress_lbl.setText("Ready")
         worker.row_started.connect(self._on_row_started)
         worker.row_done.connect(self._on_row_done)
@@ -527,6 +540,7 @@ class MainWindow(QMainWindow):
         if self._worker is None or i in self._inflight:
             return
         self._inflight.add(i)
+        self._sync_run_controls()
         self.progress_lbl.setText(f"運行中 {len(self._inflight)} 個測試…")
         self._worker.enqueue([i])
 
@@ -535,6 +549,7 @@ class MainWindow(QMainWindow):
         if not idxs:
             return
         self._inflight.update(idxs)
+        self._sync_run_controls()
         self.progress_lbl.setText(f"全測 {len(idxs)} 個測試…")
         self._worker.enqueue(idxs)
 
@@ -570,6 +585,7 @@ class MainWindow(QMainWindow):
             self._data_tables[i].setVisible(False)
             self._row_btns[i].setEnabled(True)
         self._inflight.clear()
+        self._sync_run_controls()   # 🤖 Stop/清理 → 返 idle 態（Run All 亮、Stop 灰）
         self._tick_gen.clear()   # 🤖 Stop / 清理後任何 stale live tick 到都俾 token guard 丟（唔會 repaint 已清咗嘅 label）
         self.summary_lbl.setText("")
 
@@ -584,6 +600,7 @@ class MainWindow(QMainWindow):
 
     def _on_row_done(self, i: int, res: dict):
         self._inflight.discard(i)
+        self._sync_run_controls()   # 🤖 全部完成 → Run All 返亮、Stop 返灰
         self._row_btns[i].setEnabled(True)
         if 'tick_token' in res:   # 🤖 live stream row：記錄 token 俾後續 tick 驗證（舊 run 嘅 tick 作廢）
             self._tick_gen[i] = res['tick_token']

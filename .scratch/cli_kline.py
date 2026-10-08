@@ -31,8 +31,8 @@ async def get_kline(code,ktype,broker,kline_num=None):
 
 
 # ═══════════ Contract test — P1-P5 每部份嘅驗證入口 ═══════════
-# 🤖 用法：python test/cli_kline.py          → 對每個 broker 跑 get + stream 契約斷言（exit code 0=PASS / 1=FAIL）
-#    python test/cli_kline.py stream <code> <ktype> <broker>   → 舊式手動長串流
+# 🤖 用法：python .scratch/cli_kline.py          → 對每個 broker 跑 get + stream 契約斷言（exit code 0=PASS / 1=FAIL）
+#    python .scratch/cli_kline.py stream <code> <ktype> <broker>   → 舊式手動長串流
 from modules.registry import BROKERS as _REGISTRY
 BROKER_LIST = list(_REGISTRY.keys())   # 🤖 P2：讀 registry（加新 client 自動覆蓋，唔使改呢度）
 CONTRACT_CASES = {             # 每個 broker 嘅測試 case (code, ktype) — 美股 RTH 有 live tick；港股收市都取得 baseline
@@ -160,7 +160,7 @@ async def contract_test(brokers):
 
 if __name__ == "__main__":
 
-    # ── 手動模式（舊用法）：python test/cli_kline.py stream <code> <ktype> <broker> ──
+    # ── 手動模式（舊用法）：python .scratch/cli_kline.py stream <code> <ktype> <broker> ──
     if len(sys.argv) > 1 and sys.argv[1] == 'stream':
         code, ktype, broker = sys.argv[2], sys.argv[3], sys.argv[4]
         asyncio.run(stream_kline(code=code, ktype=ktype, broker=broker))

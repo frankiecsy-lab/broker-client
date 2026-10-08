@@ -1,6 +1,6 @@
 """stream_kline 單檔測試 GUI（PySide6）— 持續實時 K 線串流
 
-運行：python test/stream_kline_gui.py
+運行：python gateway/pages/gui_kline.py
 
 版面（上 → 下）：
   0. 大字現價列：標的 · 週期 | 較上一根 bar 漲跌 | 大字現價（每次資料刷新閃一下白）| 右上角時間（最後推送 wall clock + 最新 K 線時間 — 一眼睇出推送有冇行緊）
@@ -23,12 +23,12 @@ import sys
 import time
 from datetime import datetime
 
-# 🤖 由任何工作目錄直接運行都得：加 project root 先 import 到 broker.py
-BROKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 🤖 由任何工作目錄直接運行都得：加 project root 先 import 到 broker.py（本檔喺 gateway/pages/，上三層）
+BROKER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, BROKER_DIR)
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, QTimer, QStringListModel   # 🤖 QStringListModel 喺 QtCore（唔係 QtGui）
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QCompleter,
+from PySide6.QtCore import QObject, QThread, Qt, Signal, QTimer
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
                                QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -39,6 +39,7 @@ from matplotlib.ticker import FuncFormatter
 from modules.broker import BrokerClient
 from modules.registry import BROKERS as BROKER_REGISTRY   # 🤖 P2：券商名單一來源（唔再硬編碼）
 from modules.symbol_search import get_directory          # 🤖 P8：本地 symbol index（fuzzy 輸入 + FETCH）
+from gateway.symbol_input import attach_symbol_input, make_search  # 🤖 全域模糊輸入（ticket #17 集中處理）
 
 
 # 🎨 主題跟 stock_client/app/theme/palette.py（dark）；蠟燭色對已過 CVD 驗證（deutan ΔE 11.1）
@@ -689,39 +690,7 @@ class LoopThread(QThread):
             time.sleep(0.01)
 
 
-# ─────────────────────── 🤖 P8：fuzzy 輸入 + FETCH（本地 symbol index） ───────────────────────
-
-class FuzzyCompleter(QCompleter):
-    """🤖 P8 模糊輸入：model 由 MainWindow._on_code_changed 每次 keypress 重建（search() hits，已排序/截斷）；
-       filterAcceptsRow 全放行 → popup 顯示 = model 原樣（bypass 內建 prefix filter — 佢唔識重排）。
-       pass-through 保留：冇 hit / 輸入已經係準確 code → 空 model → 唔彈 popup，用戶打咩都照樣提交。"""
-
-    def __init__(self, directory, parent=None):
-        super().__init__([], parent)
-        self._dir = directory
-        self.lang = 'zh'   # 🤖 dropdown name 跟 GUI 語言（MainWindow._retranslate 更新）
-        self.setCaseSensitivity(Qt.CaseInsensitive)
-        self.setModel(QStringListModel())
-
-    def set_query(self, q):
-        """每次 keypress call：重建 model；有 hit 先彈 popup。回傳有冇 hit。"""
-        q = str(q).strip()
-        if not q or self._dir.has_code(q):
-            # 🤖 空 / 準確 code（包括揀完之後嘅那次觸發）→ 唔好彈返 popup
-            self.model().setStringList([])
-            return False
-        items = []
-        for e in self._dir.search(q, limit=20):
-            name = self._dir.display_name(e['code'], self.lang)   # O(1)，跟語言
-            items.append(f"{e['code']}  {name}" if name else e['code'])
-        self.model().setStringList(items)
-        if items:
-            self.complete()   # 🤖 C++ complete()：popup 顯示 model（filterAcceptsRow 全放行）
-        return bool(items)
-
-    def filterAcceptsRow(self, index, parent):
-        return True   # model 只含 search hits — 全部接受（排序已經喺 search 做咗）
-
+# ─────────────────────── 🤖 P8：FETCH（本地 symbol index — 模糊輸入見 gateway/symbol_input） ───────────────────────
 
 class FetchThread(QThread):
     """🤖 P8 FETCH：background 跑 SymbolDirectory.fetch（blocking OpenD 枚舉 ~5s）— GUI thread 唔會卡。
@@ -790,9 +759,9 @@ class MainWindow(QMainWindow):
         self.lbl_symbol = QLabel(t('zh', 'lbl_symbol'))   # 🤖 存 attribute — _retranslate 要改文字
         self.code_edit = QLineEdit(DEFAULT_CODE)
         self.code_edit.setObjectName("code_edit")         # E2E hook
-        self.completer = FuzzyCompleter(self.directory)    # 🤖 P8：模糊輸入（本地 index，pass-through）
-        self.code_edit.setCompleter(self.completer)
-        self.completer.activated.connect(self._on_completer_activated)
+        # 🤖 P8 模糊輸入：一律經 gateway/symbol_input（本地 index + pass-through；揀咗淨返 CODE 入欄）
+        self.completer = attach_symbol_input(self.code_edit, make_search(self.directory),
+                                             lang=self.lang)
         self.ktype_combo = QComboBox()
         self.ktype_combo.addItems(KTYPES)
         self.ktype_combo.setCurrentText("K_1M")
@@ -904,12 +873,7 @@ class MainWindow(QMainWindow):
         return f"{code} · {ktype}" + (f"  {name}" if name else "")
 
     def _on_code_changed(self, text):
-        self.sym_label.setText(self._sym_text())
-        self.completer.set_query(text)   # 🤖 fuzzy（本地 index，pass-through）
-
-    def _on_completer_activated(self, text):
-        # 🤖 "CODE  NAME"（兩個 space）→ 填返 canonical code；code 本身唔會含空格
-        self.code_edit.setText(str(text).split('  ', 1)[0])
+        self.sym_label.setText(self._sym_text())   # 🤖 模糊輸入由 attach_symbol_input 接手（debounce → search）
 
     def on_lang_changed(self, _idx):
         self.lang = 'zh' if self.lang_combo.currentIndex() == 0 else 'en'

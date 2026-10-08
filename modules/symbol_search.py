@@ -7,8 +7,10 @@
 #     OpenD 回傳嘅中文名繁簡視版本/locale 而定（實測有繁體 cache）→ **load/fetch 時經 opencc 繁→簡統一正規化**：
 #     search 將 query 正規化做簡體先 match；EN fallback 顯示原生（簡體）；zh 顯示時 s2t 轉返繁體。
 #
-# Scope（用戶確認）：股票 / ETF / 指數 / 期貨 main contract。窩輪/牛熊證/期權太動態太海量，唔入 index
-#   （用戶打準確 code 一樣 pass-through 行得通）。
+# Scope：股票 / ETF / 指數 / 期貨 main contract / 窩輪（HK+US 實測 ~15.7k，delisting 跳過）。
+#   窩輪只俾標的列表頁（search 預設 types=CORE_TYPES 排除 → 交易/行情頁 autocomplete 照舊淨返核心）。
+#   期權：OpenD get_stock_basicinfo 唔支援枚舉（DRVT interface not supported）、IB 唔可以無標的枚舉
+#   → 入唔到 index（用戶打準確 code 一樣 pass-through 行得通）。牛熊證（BWRT）呢個 OpenD 回 0。
 #
 # 期貨：只留 main_contract=True 嘅 row + 由月份 code 合成 canonical 'XXmain'（HK.HSI2610 → HK.HSImain —
 #   Futu naming convention，probe 實測 HSImain/NQmain 係有效 code）；name 去掉 " (2610)" 月份尾綴。
@@ -42,19 +44,56 @@ CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'symbol_in
 STALE_HOURS = 24           # startup auto-fetch 閾值（cache 唔存在 / 超過呢個時數 → 重新 fetch）
 
 # 🤖 每個 plan key → (Market enum, SecurityType) 對。HK_FUTURE 係獨立 market enum（probe 實測）。
+#   WARRANT 只入 index 俾列表頁（search 預設 CORE_TYPES 排除 — 見 search() types 參數）。
 MARKET_PLAN = {
     'US': [(Market.US, SecurityType.STOCK), (Market.US, SecurityType.ETF),
-           (Market.US, SecurityType.IDX), (Market.US, SecurityType.FUTURE)],
+           (Market.US, SecurityType.IDX), (Market.US, SecurityType.FUTURE),
+           (Market.US, SecurityType.WARRANT)],
     'HK': [(Market.HK, SecurityType.STOCK), (Market.HK, SecurityType.ETF),
-           (Market.HK, SecurityType.IDX), (Market.HK_FUTURE, SecurityType.FUTURE)],
+           (Market.HK, SecurityType.IDX), (Market.HK_FUTURE, SecurityType.FUTURE),
+           (Market.HK, SecurityType.WARRANT)],
 }
+# search() 預設種類（autocomplete 唔想被 ~15.7k 窩輪污染）；列表頁傳 types=None 攞全量。
+CORE_TYPES = ('STOCK', 'ETF', 'IDX', 'FUTURE')
 
 _MONTH_SUFFIX = re.compile(r'\s*\(\d{4}\)$')          # "恒指期货主连 (2610)" → 去尾綴
 _FUT_CODE = re.compile(r'^(.*?)(\d{4})$')             # HK.HSI2610 → prefix 'HK.HSI'
 
+# search() 分層分（高者先；0 = 唔 match）。🤖 ticker（'US.NVDA' 嘅 'NVDA'）必須獨立於成串 code 計 —
+#   用戶打嘅係 ticker、唔帶市場前綴；淨計 `ql in code` 會令 NVDA 食最低級 contains 分，打 'N' 即刻俾幾千條淹沒。
+_S_CODE_EXACT = 100      # 'US.NVDA' / 'NVDA'
+_S_TICKER_PREFIX = 90    # 'NVD' → NVDA
+_S_CODE_PREFIX = 80      # 'HK.007' → HK.00700
+_S_NAME_PREFIX = 75      # '英偉' → 英伟达
+_S_SUBSTR = 70           # ticker/code contains（+ position bonus）
+_S_NAME_SUBSTR = 55      # name contains（+ position bonus）
+_S_TICKER_SUBSEQ = 40    # 跳字：'NVA' → NVDA
+_S_NAME_SUBSEQ = 35      # 跳字：'訊控' → 腾讯控股 呢類（非連續都中）
+
 
 def _has_cjk(s):
     return any('一' <= ch <= '鿿' for ch in s)
+
+
+def _pos_bonus(pos):
+    """match 位置越前 → 加分越多（最多 +9）：打 '700' 要 HK.00700 排喺 HK.02700 前面。"""
+    return max(0, 9 - pos) if pos >= 0 else 0
+
+
+def _subseq_pos(hay, needle):
+    """needle 逐字**順序**出現喺 hay（唔使連續）→ 首字位置；冇 → -1。
+       🤖 泛用化：打 'NVA'（少咗個 D）都要搵到 NVDA。"""
+    if not needle:
+        return -1
+    p = hay.find(needle[0])
+    if p < 0:
+        return -1
+    first = p
+    for ch in needle[1:]:
+        p = hay.find(ch, p + 1)
+        if p < 0:
+            return -1
+    return first
 
 
 def _normalize_cjk(entry):
@@ -81,12 +120,21 @@ def _load_futu_config():
     return str(cfg.get('host', '127.0.0.1')), int(cfg.get('port', 11111))
 
 
+def to_simplified(s):
+    """任意字串 → 簡體（opencc 缺席 / 無 CJK → no-op）。列表頁下鑽 substring 過濾用：
+       🤖 實測 s2t 將「汇丰」顯示做「滙豐」（港式）— 用戶打「匯豐」兩邊都 t2s 先至 match 到。"""
+    return _T2S.convert(s) if (_T2S is not None and s and _has_cjk(s)) else s
+
+
 def display_for(entry, lang='zh'):
-    """entry → 指定語言嘅顯示名：該語言欄有值就用，冇就 fallback 原生 name（單語言市場唔會兩邊都空）；
-       zh 模式將簡體轉返繁體（opencc）。GUI completer / sym_label 共用呢把尺。"""
-    pref = entry.get('name_zh') if lang == 'zh' else entry.get('name_en')
-    name = pref or entry.get('name', '')
-    if lang == 'zh' and _S2T is not None and _has_cjk(name):
+    """entry → 指定語言嘅顯示名：該語言欄有值就用，冇就 fallback 原生 name（單語言市場唔會兩邊都空）。
+       🤖 lang 直接食 GUI 語言碼：'zh_hk' → name_zh 再 s2t 轉繁體（港式）；'zh_cn' → 簡體原樣（唔轉）；
+       'en' → name_en fallback 原生；legacy 'zh' 當 'zh_hk'（舊调用保兼容）。
+       GUI completer / sym_label / 列表頁 / 收藏頁共用呢把尺 — 唔准喺呼叫端自己 collapse 語言。"""
+    if lang == 'en':
+        return entry.get('name_en') or entry.get('name', '')
+    name = entry.get('name_zh') or entry.get('name', '')
+    if lang != 'zh_cn' and _S2T is not None and _has_cjk(name):
         return _S2T.convert(name)
     return name
 
@@ -156,7 +204,7 @@ class SymbolDirectory:
                     for row in data.to_dict('records'):
                         code = str(row.get('code', '')).strip()
                         name = _MONTH_SUFFIX.sub('', str(row.get('name', '')).strip())
-                        if not code:
+                        if not code or bool(row.get('delisting')):   # 已退市唔入 index（窩輪特别多）
                             continue
                         if stype == SecurityType.FUTURE:
                             # 期貨只留 main contract + 合成 canonical 'XXmain'（唔 hardcode 月份 — 由 live data 推）
@@ -174,6 +222,15 @@ class SymbolDirectory:
                         else:
                             entry['name_en'] = name
                         _normalize_cjk(entry)   # canonical 簡體 — cache 統一 script（OpenD 回繁/簡都一樣）
+                        if stype == SecurityType.WARRANT:
+                            # 窩輪下鑽資料（列表頁三級導航）：所屬標的 + 類別 + 行使價/到期日。
+                            # 🤖 實測：HK stock_owner 100% 有值、stock_child_type=CALL/PUT/BULL/BEAR；
+                            #    US 窩輪兩者皆 'N/A.'（無所屬數據 → 列表頁如實 fallback 平鋪）。
+                            owner = str(row.get('stock_owner') or '').strip()
+                            entry['owner'] = '' if owner.upper().rstrip('.') in ('', 'N/A') else owner
+                            entry['wtype'] = str(row.get('stock_child_type') or '').strip().upper()
+                            entry['expiry'] = str(row.get('strike_time') or '')
+                            entry['strike'] = row.get('strike_price')
                         fresh.append(entry)
                         kept += 1
                     if progress_cb:
@@ -189,9 +246,59 @@ class SymbolDirectory:
             ctx.close()
 
     # ── search（純本地，唔打網絡）────────────────────────────────
-    def search(self, query, limit=20):
-        """fuzzy match：code exact > code prefix > name startswith > code substring ≈ name substring。
-           CJK query 先經 t2s 正規化（用戶打繁體都 match 到簡體 name）。回傳 entry list（已排序、截斷 limit）。"""
+    def _score(self, e, ql, q_cjk):
+        """entry → 分層分（見 _S_* 常量；0 = 唔 match）。
+           ticker 同 name 兩條路都要 position bonus — 同樣 contains，match 越靠前越似用戶想要嘅嗰隻。"""
+        code = e['code'].upper()
+        ticker = code.split('.', 1)[1] if '.' in code else code
+        # 🤖 HK 代碼 5 位零填充 — 用戶打 '700'/'0700' 都係指 00700 → 去零版本一齊計（先至排得入第一）
+        variants = [ticker]
+        if ticker[:1].isdigit():
+            variants.append(ticker.lstrip('0'))
+        if code == ql or any(v == ql for v in variants):
+            return _S_CODE_EXACT
+        if any(v.startswith(ql) for v in variants):
+            return _S_TICKER_PREFIX
+        if code.startswith(ql):
+            return _S_CODE_PREFIX
+        ps = [v.find(ql) for v in variants + [code]]
+        ps = [p for p in ps if p >= 0]
+        if ps:
+            return _S_SUBSTR + _pos_bonus(min(ps))
+        nz, ne = e.get('name_zh', ''), e.get('name_en', '')
+        if q_cjk:
+            p = nz.find(q_cjk)
+            if p == 0:
+                return _S_NAME_PREFIX
+            if p > 0:
+                return _S_NAME_SUBSTR + _pos_bonus(p)
+        if ne:
+            p = ne.lower().find(ql.lower())
+            if p == 0:
+                return _S_NAME_PREFIX
+            if p > 0:
+                return _S_NAME_SUBSTR + _pos_bonus(p)
+        p = _subseq_pos(ticker, ql)
+        if p >= 0:
+            return _S_TICKER_SUBSEQ + _pos_bonus(p)
+        if q_cjk:
+            p = _subseq_pos(nz, q_cjk)
+            if p >= 0:
+                return _S_NAME_SUBSEQ + _pos_bonus(p)
+        if ne:
+            p = _subseq_pos(ne.lower(), ql.lower())
+            if p >= 0:
+                return _S_NAME_SUBSEQ + _pos_bonus(p)
+        return 0
+
+    def search(self, query, limit=20, types=CORE_TYPES):
+        """fuzzy match，分層排序（高者先）：code/ticker exact > **ticker prefix** > code prefix
+           > name prefix > ticker/code contains > name contains > **跳字 subsequence**（'NVA' → NVDA）。
+           🤖 完全泛用化（用戶要求）：打任何一段字母/中文都要返對應標的 — 所以 ticker 獨立計分
+           （用戶打 'NVD' 唔會帶 'US.' 前綴）＋ position bonus（'700' 先 HK.00700 後 HK.02700）
+           ＋ 跳字兜底。CJK query 先經 t2s 正規化（打繁體都 match 到簡體 name）。
+           types：只 match 呢啲 SecurityType（預設 CORE_TYPES — autocomplete 唔被窩輪污染）；None = 全量（列表頁）。
+           成本：全表 ~40k 條含跳字 ≈ 20ms（實測）→ 經 GUI debounce，唔會卡。"""
         q = str(query).strip()
         if not q or not self.entries:
             return []
@@ -200,24 +307,18 @@ class SymbolDirectory:
         q_cjk = _T2S.convert(q) if (_T2S is not None and _has_cjk(q)) else q
         scored = []
         for e in self.entries:
-            cl = e['code'].upper()
-            score = 0
-            if cl == ql:
-                score = 100
-            elif cl.startswith(ql):
-                score = 80
-            elif ql in cl:
-                score = 60
-            else:
-                nz, ne = e.get('name_zh', ''), e.get('name_en', '')
-                if q_cjk and q_cjk in nz:
-                    score = 70 if nz.startswith(q_cjk) else 50
-                elif ne and ql.lower() in ne.lower():
-                    score = 70 if ne.lower().startswith(ql.lower()) else 50
-            if score:
-                scored.append((score, e))
+            if types is not None and e.get('type') not in types:
+                continue
+            s = self._score(e, ql, q_cjk)
+            if s:
+                scored.append((s, e))
         scored.sort(key=lambda t: (-t[0], t[1]['code']))
         return [e for _, e in scored[:limit]]
+
+    def get(self, code):
+        """O(1) 精確 code lookup（大細階唔敏感）→ entry（canonical 大細階，期貨主連 HK.HSImain
+        細階 main 靠呢度還原）or None。"""
+        return self._by_code.get(str(code).strip().upper())
 
     def display_name(self, code, lang='zh'):
         """按語言返顯示名（O(1) — GUI 每次 keypress / sym_label update 都 call）。"""
@@ -233,6 +334,58 @@ def get_directory():
     if _dir is None:
         _dir = SymbolDirectory()
     return _dir
+
+
+# ── 期權鏈（列表頁二級下鑽）────────────────────────────────────────
+# 🤖 probe 實測：冇任何接口可以「邊個有期權」一次枚舉 → 只能逐標的即時查。
+#   get_option_expiration_date 日期喺 strike_time 欄；get_option_chain start/end 跨度 ≤30 日
+#   → 逐到期日各 call 一次。🤖 配額實測：get_option_chain 每 30 秒最多 10 次（超咗 RET_ERROR
+#   「頻率太高」，連 NVDA 26 個到期日都要 3 個窗口 ~60 秒）→ 模組級滑動視窗節流（跨 call 共用，
+#   連續查兩個標的都唔會食底食配額），失敗如實入 msg（全失敗先 ok=False）。
+_CHAIN_STAMPS = []   # 滑動 30 秒視窗內嘅 get_option_chain call 時間（配額 10 次/30s，全程序共用）
+
+
+def _chain_throttle():
+    now = time.monotonic()
+    _CHAIN_STAMPS[:] = [t for t in _CHAIN_STAMPS if now - t < 30.0]
+    if len(_CHAIN_STAMPS) >= 10:
+        time.sleep(30.0 - (now - _CHAIN_STAMPS[0]) + 0.2)
+    _CHAIN_STAMPS.append(time.monotonic())
+
+
+def fetch_option_chain(code, progress_cb=None, max_dates=30):
+    """(ok, rows, msg) — 即時攞指定標的全部到期日嘅期權鏈（10 次/30 秒節流）。
+       rows = [{code,name,otype,strike,expiry,lot_size,owner}]（otype = CALL/PUT）。
+       progress_cb(i, total, date) 俾 GUI 顯示進度；max_dates 上限防超長鏈拖死 UI。"""
+    host, port = _load_futu_config()
+    ctx = OpenQuoteContext(host=host, port=port)
+    try:
+        ret, data = ctx.get_option_expiration_date(str(code).strip().upper())
+        if ret != RET_OK or data is None or len(data) == 0:
+            return False, [], str(data if data is not None else 'empty')[:120]
+        dates = [str(d) for d in data['strike_time']][:max_dates]
+        rows = []
+        errs = []
+        for i, d in enumerate(dates):
+            if progress_cb:
+                progress_cb(i + 1, len(dates), d)
+            _chain_throttle()
+            ret, chain = ctx.get_option_chain(str(code).strip().upper(),
+                                              start=d, end=d, option_type='ALL')
+            if ret != RET_OK or chain is None:
+                errs.append(str(chain))
+                continue   # 個別到期日失敗唔殺全鏈 — 跳過，msg 如實 count
+            for r in chain.to_dict('records'):
+                rows.append({'code': str(r.get('code', '')), 'name': str(r.get('name', '')),
+                             'otype': str(r.get('option_type', '')), 'strike': r.get('strike_price'),
+                             'expiry': str(r.get('strike_time', '')), 'lot_size': r.get('lot_size'),
+                             'owner': str(r.get('stock_owner', ''))})
+        msg = f'{len(dates)} 個到期日 / {len(rows)} 條'
+        if errs:
+            msg += f'（{len(errs)} 個失敗：{errs[0][:60]}）'
+        return (bool(rows) or not errs), rows, msg   # 全部失敗 → ok=False 如實報
+    finally:
+        ctx.close()
 
 
 # ── CLI entry：python -m modules.symbol_search fetch [--markets US,HK] / search <query> ──

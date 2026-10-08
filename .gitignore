@@ -118,3 +118,6 @@ Thumbs.db
 # P8 symbol index cache（modules/symbol_search.py fetch 產生，~2MB，唔係 source code）
 modules/symbol_index.json
 
+
+# One Gate runtime UI state (state_store.py)
+gateway/ui_state.json

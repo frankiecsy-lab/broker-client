@@ -2,7 +2,7 @@
 
 唔打網絡 — FakeDir 包住真 index（is_stale=False → startup 唔會 auto-fetch）。
 前置：modules/symbol_index.json 存在（python -m modules.symbol_search fetch 建過）。
-Run: python test/e2e_gui_p8.py   (exit 0=PASS / 1=FAIL)
+Run: python .scratch/e2e_gui_p8.py   (exit 0=PASS / 1=FAIL)
 
 🤖 print 全部 ASCII（cp950 console 規則 — CJK detail 經 _asc() sanitize）；
    worker_ready race rule：等 thread.worker 之後 pump(0.5) 先至 signal slot connect 好。
@@ -12,17 +12,15 @@ import sys
 import time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-for p in (PROJECT_ROOT, TEST_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from PySide6.QtWidgets import QApplication
 
 app = QApplication(sys.argv)   # 🤖 先建 app 再 import gui_kline（widget 建立時要 QGuiApplication）
 
-import gui_kline
-from modules.symbol_search import get_directory as real_get_directory
+from gateway.pages import gui_kline
+from modules.symbol_search import CORE_TYPES, get_directory as real_get_directory
 
 
 def _asc(s):
@@ -42,8 +40,8 @@ class FakeDir:
     def is_stale(self):
         return False
 
-    def search(self, q, limit=20):
-        return self._real.search(q, limit)
+    def search(self, q, limit=20, types=CORE_TYPES):   # 鏡像真 SymbolDirectory.search contract
+        return self._real.search(q, limit, types)
 
     def display_name(self, code, lang='zh'):
         return self._real.display_name(code, lang)
@@ -100,23 +98,25 @@ check("title zh", "stream_kline" in win.windowTitle(), win.windowTitle())
 sym = win.sym_label.text()
 check("sym label zh has name", sym.startswith("HK.HSImain") and "恒指期貨主連" in sym, sym)
 
-# ── completer：CJK fuzzy（繁體 input → 簡體 match）──
+# ── completer（gateway/symbol_input）：CJK fuzzy（繁體 input → 簡體 match，item 連名稱）──
+# 🤖 debounce 200ms → pump 要食過 debounce
 win.code_edit.setText("騰訊")
-pump(0.2)
+pump(0.5)
 m = win.completer.model()
 first = m.stringList()[0] if m.rowCount() > 0 else ""
-check("completer CJK hits", m.rowCount() > 0 and first.startswith("HK.00700"),
+check("completer CJK hits（item 連名稱）",
+      m.rowCount() > 0 and first.startswith("HK.00700") and len(first.split()) == 2,
       f"rows={m.rowCount()} first={first!r}")
 
 # ── completer：pass-through（冇 hit → 空 model，唔彈）──
 win.code_edit.setText("ZZZQQQ123")
-pump(0.2)
+pump(0.5)
 check("completer passthrough empty", win.completer.model().rowCount() == 0,
       f"rows={win.completer.model().rowCount()}")
 
 # ── completer：準確 code → 唔彈（has_code skip）──
 win.code_edit.setText("HK.00700")
-pump(0.2)
+pump(0.5)
 check("completer exact-code no popup", win.completer.model().rowCount() == 0,
       f"rows={win.completer.model().rowCount()}")
 

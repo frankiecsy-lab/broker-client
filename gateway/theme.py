@@ -1,6 +1,6 @@
 """One Gate theme — 暗色（= gui_kline 原生配色）/ 淺色（專業 palette）。QSS 由呢度統一生成。
 
-- **dark**：直接沿用 `test/gui_kline.py` 嘅 C_* 顏色常數 → 之後嵌入 gui_kline /
+- **dark**：直接沿用 `gateway/pages/gui_kline.py` 嘅 C_* 顏色常數 → 之後嵌入 gui_kline /
   gui_fulltest 時外殼同頁面零色差、原生感。
 - **light**：新專業 palette（冷灰底 + 白 nav bar + 淺灰卡片，同一 accent 品牌色）。
 - QSS 全部 scope 喺 `[og="..."]` property selector / objectName 之下 →
@@ -8,7 +8,7 @@
 """
 from string import Template
 
-# ── dark = gui_kline 原生配色（test/gui_kline.py C_* constants，紅漲/綠跌港股慣例）──
+# ── dark = gui_kline 原生配色（gateway/pages/gui_kline.py C_* constants，紅漲/綠跌港股慣例）──
 DARK = {
     'window': '#1E1F22',        # C_WINDOW — app 底
     'surface': '#26282C',       # C_SURFACE — nav bar / raised surface
@@ -72,6 +72,20 @@ QComboBox#lang_combo, QComboBox#standalone_lang {
     background-color: $card; color: $text;
     border: 1px solid $border; border-radius: 6px; padding: 5px 10px; font-size: 13px;
 }
+
+/* 語言三按鈕（用戶：唔准 dropdown）— 細 size navbtn，checked = 當前語言 */
+QPushButton[og="langbtn"] {
+    background-color: $card; color: $muted;
+    border: 1px solid $border; border-radius: 6px; padding: 5px 10px; font-size: 13px;
+}
+QPushButton[og="langbtn"]:hover { color: $text; border-color: $accent; }
+QPushButton[og="langbtn"]:checked { background-color: $accent; color: #FFFFFF; border-color: $accent; font-weight: bold; }
+
+/* nav 子選單（測試 / 設定）+ 右鍵彈出選單 — 跟 theme */
+QMenu { background-color: $card; color: $text; border: 1px solid $border; padding: 4px; }
+QMenu::item { padding: 6px 24px; border-radius: 4px; }
+QMenu::item:selected { background-color: $accent; color: #FFFFFF; }
+QMenu::item:checked { color: $accent; font-weight: bold; }
 
 QLabel#standalone_title { color: $text; font-size: 15px; font-weight: bold; }
 

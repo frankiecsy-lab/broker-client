@@ -3,9 +3,10 @@
 Check: maximized / 八欄 table shape（參數拆多欄）/ 無輸入欄位 / objectNames /
        單行經真 BrokerClient 跑到 ✅ PASS / 成功行「▸ 數據」拆疊展開+收埋 /
        誠實失敗行 ⚠️ EXPECTED FAIL / **3 rows 同時並發**全部完成且正確 /
-       Run All 按鈕 wiring（monkeypatch enqueue）/ Stop 清理所有結果（包括運行中嘅行）/ closeEvent 釋放 thread。
+       Run All 按鈕 wiring（monkeypatch enqueue）/ Stop 清理所有結果（包括運行中嘅行）/ closeEvent 釋放 thread /
+       🤖 默認隱藏 EXPECTED FAIL + 按鈕狀態機（idle → Stop 灰；運行中 → Run All 灰、該行 ▶ 灰）。
 前置：OpenD 開緊（IB 唔使 — 呢個 E2E 只跑 futu rows）。
-Run: python test/e2e_gui_fulltest.py   (exit 0=PASS / 1=FAIL)
+Run: python .scratch/e2e_gui_fulltest.py   (exit 0=PASS / 1=FAIL)
 
 🤖 print 全部 ASCII（cp950 console 規則）；worker_ready race rule：等 thread.worker 之後 pump(0.5) 先撳按鈕。
 """
@@ -14,16 +15,14 @@ import sys
 import time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-for p in (PROJECT_ROOT, TEST_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from PySide6.QtWidgets import QApplication, QLineEdit, QSpinBox
 
 app = QApplication(sys.argv)   # 🤖 先建 app 再 import gui_fulltest（widget 建立時要 QGuiApplication）
 
-import gui_fulltest
+from gateway.pages import gui_fulltest
 
 
 def _asc(s):
@@ -85,13 +84,21 @@ check("objectNames", win.run_all_btn.objectName() == 'run_all'
       and win.progress_lbl.objectName() == 'progress'
       and win.summary_lbl.objectName() == 'summary')
 
-# 🤖 隱藏 EXPECTED FAIL toggle：display-only — 只隱 expect=False rows，Run All 仍然 enqueue 全部 18
+# 🤖 用戶要求：默認隱藏 EXPECTED FAIL（display-only — Run All 仍然 enqueue 全部 18）
 check("hide_ef btn", win.hide_ef_btn.objectName() == 'hide_expected_fail' and win.hide_ef_btn.isCheckable())
-win.hide_ef_btn.click()   # toggle ON → hide expected-fail rows
+check("hide_ef default ON (默認隱藏 EF)", win.hide_ef_btn.isChecked())
+default_hidden = all(t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is False)
+default_visible = all(not t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is not False)
+check("default hides expected-fail rows only", default_hidden and default_visible)
+
+# 🤖 用戶要求：RUN/STOP/RUN ALL 未開始要灰 — 狀態機 idle 態（worker ready、冇運行中）
+check("idle: run_all + row ▶ enabled, stop grey",
+      win.run_all_btn.isEnabled() and all(b.isEnabled() for b in win._row_btns)
+      and not win.stop_btn.isEnabled())
+
+win.hide_ef_btn.click()   # toggle OFF → 全部顯示返
 pump(0.2)
-hidden_ok = all(t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is False)
-visible_ok = all(not t.isRowHidden(win._test_to_row[i]) for i, s in enumerate(gui_fulltest.TESTS) if s['expect'] is not False)
-check("hide_ef hides expected-fail rows only", hidden_ok and visible_ok)
+check("toggle OFF shows all rows", all(not t.isRowHidden(r) for r in win._test_to_row))
 captured = []
 orig_enqueue = win._worker.enqueue
 win._worker.enqueue = lambda idxs: captured.append(list(idxs))
@@ -102,7 +109,8 @@ finally:
     win._worker.enqueue = orig_enqueue
 check("run all unaffected by hidden rows", len(captured) == 1 and captured[0] == list(range(len(gui_fulltest.TESTS))))
 win._inflight.clear()
-win.hide_ef_btn.click()   # toggle back OFF
+win._sync_run_controls()   # 🤖 手動清 inflight → 同步返 UI idle 態
+win.hide_ef_btn.click()   # toggle back ON（恢復默認隱藏）
 pump(0.2)
 
 
@@ -186,6 +194,7 @@ finally:
 check("run all wired", len(captured) == 1 and captured[0] == list(range(len(gui_fulltest.TESTS))),
       str(captured)[:160])
 win._inflight.clear()   # 🤖 run_all 已標記全部 inflight — 清走先至可以繼續真跑
+win._sync_run_controls()   # 🤖 同步返 UI idle 態
 
 # ── Stop：stream row 運行中撳 Stop → 所有結果清理（包括運行中嗰行）──
 k = find_row('futu', 'stream_kline', 'US.NVDA')
@@ -195,6 +204,10 @@ while time.monotonic() < end and "運行中" not in win._res_labels[k].text():
     app.processEvents()
     time.sleep(0.05)
 check("stream row started", "運行中" in win._res_labels[k].text(), win._res_labels[k].text())
+# 🤖 狀態機：運行中 → Run All 灰（防重入）、Stop 亮、運行中嗰行 ▶ 灰
+check("running: run_all grey, stop lit, running row ▶ grey",
+      not win.run_all_btn.isEnabled() and win.stop_btn.isEnabled()
+      and not win._row_btns[k].isEnabled())
 win.stop_btn.click()   # 🤖 stop() 同步清 GUI；worker cleanup（cancel + broker teardown）之後 stopped signal 再清一次
 end = time.monotonic() + 8
 while time.monotonic() < end:
@@ -204,6 +217,8 @@ while time.monotonic() < end:
         break
 cleared = [win._res_labels[r].text() for r in range(len(gui_fulltest.TESTS))]
 check("stop clears all results", all(x == "—" for x in cleared), str(cleared)[:200])
+check("after stop: back to idle (run_all lit, stop grey)",
+      win.run_all_btn.isEnabled() and not win.stop_btn.isEnabled())
 check("stop clears summary", win.summary_lbl.text() == "")
 
 # ── closeEvent：thread 乾淨退出（釋放 client）──
