@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>KlinePage</class>
+ <widget class="QWidget" name="kline_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <property name="spacing"><number>0</number></property>
+   <!-- 嵌入嘅 gui_kline central widget（零改動 gui_kline.py：佢個 layout 喺佢自己 code 砌）
+        → kline_page.py takeCentralWidget() 後 addWidget 進 embeddedSlot -->
+   <item>
+    <layout class="QVBoxLayout" name="embeddedSlot"/>
+   </item>
+  </layout>
+  <!-- 指標開關掣列：**唔放喺 pageLayout** —— 運行時由 kline_page.py 插進嵌入 central layout 嘅
+       K 線圖正上方（gui_kline 零改動，插位屬行為、唔屬呢檔排版）。
+       掣嘅**數量**屬資料（= IndicatorManager 已配置指標）→ `_rebuild_toggle_bar` 逐個填進
+       indToggleSlot（objectName ind_toggle_&lt;id&gt;）；加指標唔使改呢檔。 -->
+  <widget class="QWidget" name="ind_bar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="indBarLayout">
+    <property name="leftMargin"><number>6</number></property>
+    <property name="topMargin"><number>2</number></property>
+    <property name="rightMargin"><number>6</number></property>
+    <property name="bottomMargin"><number>0</number></property>
+    <property name="spacing"><number>4</number></property>
+    <item>
+     <widget class="QLabel" name="ind_bar_lbl">
+      <property name="text"><string>顯示指標：</string></property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="indToggleSlot">
+      <property name="spacing"><number>4</number></property>
+     </layout>
+    </item>
+    <item>
+     <spacer name="indBarStretch">
+      <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+      <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+      <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+     </spacer>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

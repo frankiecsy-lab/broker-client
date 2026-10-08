@@ -1,0 +1,652 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FutuTradePage</class>
+ <!--
+   FUTU 交易頁排版（Qt Designer 可開）。身份契約：objectName == page 入面嘅 Python 屬性名
+   （QUiLoader 會將子 widget 掛做 root attribute），改名要兩邊同步。
+   `og` / `role` 呢類自訂 dynamic property Designer 帶唔住 → 一律由 futu_trade_page._STAMP 喺 load 後注入。
+   欄位/卡片比例用 sizePolicy 嘅 horstretch/verstretch（= Designer「Layout Stretch」），
+   因為 `.ui` 嘅 <item> 唔帶 stretch 屬性（uic: Unexpected attribute stretch）；root 級要
+   剩餘高度歸某區，就包一個 wrapper widget 帶 verstretch（見 cols_wrap）。
+   Designer 改呢檔時注意：QGridLayout 間距屬性名必須係 horizontalSpacing/verticalSpacing
+   （寫 hspacing/vspacing 會被 uic 靜靜丟掉，實測變返 6）；card 嘅 vsizetype 唔好寫 Fixed。
+   表格欄數、下拉 item、TIF/市場選項嘅「數量」全部屬資料 → 由 code 填，呢檔唔使改。
+ -->
+ <widget class="QWidget" name="futu_trade_page">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1280</width><height>860</height></rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>24</number></property>
+   <property name="topMargin"><number>24</number></property>
+   <property name="rightMargin"><number>24</number></property>
+   <property name="bottomMargin"><number>24</number></property>
+   <property name="spacing"><number>6</number></property>
+
+   <!-- ── Header card（pagetitle / pagebody 靠 app-level [og="pagecard"] + [role=...] style）
+        淨係 verstretch=0（唔食剩餘高度）；vsizetype 必須 Preferred，Fixed 會令
+        QWidgetItem 把 item 最小高度抬到 sizeHint，成頁 minimumSizeHint 多 28px ── -->
+   <item>
+    <widget class="QWidget" name="header_card">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <layout class="QVBoxLayout" name="headerLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>24</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>24</number></property>
+      <property name="spacing"><number>6</number></property>
+      <item>
+       <widget class="QLabel" name="title_lbl">
+        <property name="text"><string>FUTU 交易</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="headerGap">
+        <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+        <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>0</width><height>10</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="body_lbl">
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="text"><string>連線、帳戶、落單同持倉</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── 兩欄主區：左 = 今日訂單 + 持倉資金（horstretch 3）/ 右 = 連線帳戶 + 下單（2）── -->
+   <item>
+    <widget class="QWidget" name="cols_wrap">
+     <!-- verstretch 1：root 剩餘高度全歸兩欄主區（等同命令式 v.addLayout(cols, 1)） -->
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+     <layout class="QHBoxLayout" name="colsLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <property name="spacing"><number>16</number></property>
+      <item>
+       <widget class="QWidget" name="left_col">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+          <horstretch>3</horstretch><verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QVBoxLayout" name="leftCol">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <property name="spacing"><number>16</number></property>
+
+         <!-- 今日訂單 card（verstretch 3 = 佔左欄 3/5 高度）-->
+         <item>
+          <widget class="QWidget" name="orders_card">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+             <horstretch>0</horstretch><verstretch>3</verstretch>
+            </sizepolicy>
+           </property>
+           <layout class="QVBoxLayout" name="ordersCardLayout">
+            <property name="leftMargin"><number>32</number></property>
+            <property name="topMargin"><number>24</number></property>
+            <property name="rightMargin"><number>32</number></property>
+            <property name="bottomMargin"><number>24</number></property>
+            <property name="spacing"><number>6</number></property>
+            <item>
+             <widget class="QLabel" name="orders_title_lbl">
+              <property name="text"><string>今日訂單</string></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="ordersHeadGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>12</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="ordersBtnRow">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="spacing"><number>6</number></property>
+              <item>
+               <widget class="QPushButton" name="orders_refresh_btn">
+                <property name="text"><string>刷新</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="ordersBtnGap1">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>8</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QPushButton" name="cancel_sel_btn">
+                <property name="text"><string>撤選中</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="ordersBtnGap2">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>8</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QPushButton" name="cancel_all_btn">
+                <property name="text"><string>全撤</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="ordersBtnStretch">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="ordersStatusGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="orders_status_lbl">
+              <property name="wordWrap"><bool>true</bool></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="ordersTableGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <!-- 欄數 = ORDER_COLS（屬資料）→ _config_table 設；欄名 i18n → _apply_headers -->
+            <item>
+             <widget class="QTableWidget" name="orders_table"/>
+            </item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- 持倉同帳戶資金 card（verstretch 2）-->
+         <item>
+          <widget class="QWidget" name="pos_card">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+             <horstretch>0</horstretch><verstretch>2</verstretch>
+            </sizepolicy>
+           </property>
+           <layout class="QVBoxLayout" name="posCardLayout">
+            <property name="leftMargin"><number>32</number></property>
+            <property name="topMargin"><number>24</number></property>
+            <property name="rightMargin"><number>32</number></property>
+            <property name="bottomMargin"><number>24</number></property>
+            <property name="spacing"><number>6</number></property>
+            <item>
+             <widget class="QLabel" name="pos_title_lbl">
+              <property name="text"><string>持倉同帳戶資金</string></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="posHeadGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>12</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="posBtnRow">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="spacing"><number>6</number></property>
+              <item>
+               <widget class="QPushButton" name="pos_refresh_btn">
+                <property name="text"><string>刷新</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="posBtnStretch">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="posAccinfoGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="accinfo_lbl">
+              <property name="wordWrap"><bool>true</bool></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="posTableGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QTableWidget" name="pos_table"/>
+            </item>
+           </layout>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+
+      <item>
+       <widget class="QWidget" name="right_col">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+          <horstretch>2</horstretch><verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QVBoxLayout" name="rightCol">
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
+         <property name="spacing"><number>16</number></property>
+
+         <!-- 連線同帳戶 card（連線/斷開按鈕已刪 — 默認自動連線，狀態只喺 conn_status_lbl 如實反映）-->
+         <item>
+          <widget class="QWidget" name="conn_card">
+           <layout class="QVBoxLayout" name="connCardLayout">
+            <property name="leftMargin"><number>32</number></property>
+            <property name="topMargin"><number>24</number></property>
+            <property name="rightMargin"><number>32</number></property>
+            <property name="bottomMargin"><number>24</number></property>
+            <property name="spacing"><number>6</number></property>
+            <item>
+             <widget class="QLabel" name="conn_title_lbl">
+              <property name="text"><string>連線同帳戶</string></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="connHeadGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>12</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="hostRow">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="spacing"><number>6</number></property>
+              <item>
+               <widget class="QLabel" name="host_lbl">
+                <property name="text"><string>Host</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLineEdit" name="host_edit">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>2</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="hostPortGap">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>8</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QLabel" name="port_lbl">
+                <property name="text"><string>Port</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLineEdit" name="port_edit">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="connStatusGap1">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <spacer name="connStatusGap2">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>10</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="conn_status_lbl">
+              <property name="wordWrap"><bool>true</bool></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="envRowGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <!-- 環境切換（SIM/REAL exclusive — QButtonGroup 屬行為，由 code 組）+ 市場過濾
+                 （MARKET_FILTERS 屬資料 → code 填 item）。預設 SIM = 安全邊。 -->
+            <item>
+             <layout class="QHBoxLayout" name="envRow">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="spacing"><number>6</number></property>
+              <item>
+               <widget class="QPushButton" name="env_sim_btn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="checkable"><bool>true</bool></property>
+                <property name="checked"><bool>true</bool></property>
+                <property name="text"><string>模擬</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="envBtnGap">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>8</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QPushButton" name="env_real_btn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="checkable"><bool>true</bool></property>
+                <property name="text"><string>實盤</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="marketGap">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>12</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QLabel" name="market_lbl">
+                <property name="text"><string>市場過濾</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="market_combo">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="accTableGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QTableWidget" name="acc_table">
+              <property name="maximumHeight"><number>160</number></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="accSelGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="acc_sel_lbl">
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="accSelGap2">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>8</height></size></property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- 下單 card（買入/賣出兩鍵；方向由按鍵決定）-->
+         <item>
+          <widget class="QWidget" name="order_card">
+           <layout class="QVBoxLayout" name="orderCardLayout">
+            <property name="leftMargin"><number>32</number></property>
+            <property name="topMargin"><number>24</number></property>
+            <property name="rightMargin"><number>32</number></property>
+            <property name="bottomMargin"><number>24</number></property>
+            <property name="spacing"><number>6</number></property>
+            <item>
+             <widget class="QLabel" name="order_title_lbl">
+              <property name="text"><string>下單</string></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="orderHeadGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>12</height></size></property>
+             </spacer>
+            </item>
+            <!-- 代碼欄 = code_edit + code_hint_lbl（hint 屬狀態 → code 更新）；
+                 ORDER_TYPES / TIF_OPTIONS 屬資料 → code 填 combo item -->
+            <item>
+             <layout class="QGridLayout" name="orderGrid">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="horizontalSpacing"><number>10</number></property>
+              <property name="verticalSpacing"><number>8</number></property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="code_lbl">
+                <property name="text"><string>代碼 (code)</string></property>
+               </widget>
+              </item>
+              <item row="0" column="1" rowspan="1" colspan="3">
+               <widget class="QWidget" name="code_cell">
+                <layout class="QVBoxLayout" name="codeCellLayout">
+                 <property name="leftMargin"><number>0</number></property>
+                 <property name="topMargin"><number>0</number></property>
+                 <property name="rightMargin"><number>0</number></property>
+                 <property name="bottomMargin"><number>0</number></property>
+                 <property name="spacing"><number>6</number></property>
+                 <item>
+                  <widget class="QLineEdit" name="code_edit"/>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="code_hint_lbl">
+                   <property name="text"><string/></property>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="otype_lbl">
+                <property name="text"><string>訂單類型</string></property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QComboBox" name="otype_combo"/>
+              </item>
+              <item row="1" column="2">
+               <widget class="QLabel" name="price_lbl">
+                <property name="text"><string>價格</string></property>
+               </widget>
+              </item>
+              <item row="1" column="3">
+               <widget class="QLineEdit" name="price_edit"/>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="qty_lbl">
+                <property name="text"><string>數量</string></property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QLineEdit" name="qty_edit"/>
+              </item>
+              <item row="2" column="2">
+               <widget class="QLabel" name="tif_lbl">
+                <property name="text"><string>TIF</string></property>
+               </widget>
+              </item>
+              <item row="2" column="3">
+               <widget class="QComboBox" name="tif_combo"/>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="unlockGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>6</height></size></property>
+             </spacer>
+            </item>
+            <!-- 解鎖狀態（只實盤顯示 — hide/show 屬行為 → code；新版 OpenD 只容許 GUI 解鎖）-->
+            <item>
+             <widget class="QLabel" name="unlock_status_lbl">
+              <property name="wordWrap"><bool>true</bool></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="buySellGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>4</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="buySellRow">
+              <property name="leftMargin"><number>0</number></property>
+              <property name="topMargin"><number>0</number></property>
+              <property name="rightMargin"><number>0</number></property>
+              <property name="bottomMargin"><number>0</number></property>
+              <property name="spacing"><number>6</number></property>
+              <item>
+               <widget class="QPushButton" name="buy_btn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="text"><string>買入 BUY</string></property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="buySellMidGap">
+                <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+                <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+                <property name="sizeHint" stdset="0"><size><width>8</width><height>0</height></size></property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QPushButton" name="sell_btn">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                  <horstretch>1</horstretch><verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="text"><string>賣出 SELL</string></property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <spacer name="orderResultGap">
+              <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+              <property name="sizeType"><enum>QSizePolicy::Policy::Fixed</enum></property>
+              <property name="sizeHint" stdset="0"><size><width>0</width><height>10</height></size></property>
+             </spacer>
+            </item>
+            <item>
+             <widget class="QLabel" name="order_result_lbl">
+              <property name="wordWrap"><bool>true</bool></property>
+              <property name="text"><string/></property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+
+         <item>
+          <spacer name="rightColStretch">
+           <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+           <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+           <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

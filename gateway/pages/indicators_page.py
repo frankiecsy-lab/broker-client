@@ -10,7 +10,10 @@
   因為新增時根本未有行；揀行會經 `_fill_editor` 轉到頂欄，所以兩者永遠一致。
 - **跨頁同步**：manager listener（origin 過濾）— K 線頁撳開關掣 → 本頁表格即時打勾；本頁改 → K 線頁即時生效。
 - **底部**：指標總數 / 顯示中 + status（set status 必須喺 refresh 之後 — #10/#11 教訓）。
-- **Theme/i18n**：照其他頁 recipe。
+- **排版**：`gateway/ui/indicators_page.ui`（Designer 可調）— 邊行、margin、間距、詳情面板排版屬 UI；
+  類型 / 位置 / **參數列** / **每個參數一行解釋** 屬資料 → 由 `INDICATOR_DEFS` 生成後填進 `.ui`
+  預留嘅 `paramSlot` / `detailNoteSlot`（加指標唔使改 `.ui`）。
+- **Theme/i18n**：照其他頁 recipe（`gateway/ui/bind.py` 嘅 `stamp` / `apply_text`）。
 
 單獨運行：`python gateway/pages/indicators_page.py`。
 """
@@ -24,18 +27,32 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QAbstractTableModel  # noqa: E402
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,  # noqa: E402
-                               QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
-                               QPushButton, QSpinBox, QTableView, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDoubleSpinBox,  # noqa: E402
+                               QHeaderView, QLabel, QSpinBox, QWidget)
 
 import gateway.theme as theme_mod  # noqa: E402
 from gateway import indicators  # noqa: E402 — 指標單一事實來源
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 COLUMNS = ('enabled', 'name', 'desc', 'position', 'params', 'id')
 HEAD_KEYS = {'enabled': 'ind_head_enabled', 'name': 'ind_head_name', 'desc': 'ind_head_desc',
              'position': 'ind_head_position', 'params': 'ind_head_params', 'id': 'id'}
 _POS_KEYS = {'main': 'ind_pos_main', 'sub': 'ind_pos_sub'}
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {
+    'indicators_page': {}, 'ind_detail_panel': {},   # bare QWidget 要 WA_StyledBackground 先食到背景 QSS
+    'ind_add_btn': {'og': 'indbtn'}, 'ind_save_btn': {'og': 'indbtn'},
+    'ind_remove_btn': {'og': 'indbtn'}, 'ind_detail_toggle': {'og': 'indbtn'},
+    'ind_detail_desc': {'og': 'inddesc'}, 'ind_detail_usage': {'og': 'indusage'},
+    'ind_detail_head': {'og': 'indhead'},
+}
+_TEXT = {'ind_add_btn': 'ind_add', 'ind_save_btn': 'ind_save', 'ind_remove_btn': 'ind_remove',
+         'ind_detail_head': 'ind_detail_params'}
+# 詳情掣嘅文字跟「展開定收起」→ 唔入 _TEXT，retranslate 入面單獨處理
+# （ind_detail_desc / _usage 混咗所選類型嘅資料 → 照留喺 _rebuild_detail）
 
 
 class _IndModel(QAbstractTableModel):
@@ -114,101 +131,60 @@ class _IndModel(QAbstractTableModel):
 class IndicatorsPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.setObjectName('indicators_page')
+        apply_ui(self, 'indicators_page')   # 排版喺 .ui（Designer 可調 margin / 行高 / 詳情面板排版）
+        stamp(self, _STAMP)
         self._lang = DEFAULT_LANG
         self._mgr_inst = None            # lazy get_manager()（e2e 可 reset 後重建本頁）
         self._sel_id = None
-
-        v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 8)
-        v.setSpacing(6)
-
-        # ── 頂欄：類型 / 位置 / 參數 / 新增 / 套用 / 移除 ──
-        top = QHBoxLayout()
-        self.def_combo = QComboBox()
-        self.def_combo.setObjectName('ind_def_combo')
         self._def_keys = list(indicators.INDICATOR_DEFS)
-        for i, k in enumerate(self._def_keys):
-            d = indicators.INDICATOR_DEFS[k]
-            self.def_combo.addItem(d.label)
-            self.def_combo.setItemData(i, t(d.desc_key, self._lang), Qt.ToolTipRole)
-        top.addWidget(self.def_combo)
-        self.pos_combo = QComboBox()
-        self.pos_combo.setObjectName('ind_pos_combo')
-        top.addWidget(self.pos_combo)
-        v.addLayout(top)
+        self._param_spins, self._param_lbls = {}, {}   # 參數控件：數量屬資料 → 填進 paramSlot
+        self._detail_notes = {}                        # 詳情解釋：同上 → 填進 detailNoteSlot
 
-        self.param_row = QHBoxLayout()   # 參數 label + spinbox（隨類型重建，objectName ind_param_<key>）
-        self._param_spins = {}
-        self._param_lbls = {}
-        v.addLayout(self.param_row)
+        self._fill_def_combo()
+        self._setup_table()              # 要先過 setModel（selectionModel 只有 model 之後先存在）
+        self._connect_signals()
+        self.ind_detail_panel.setVisible(False)   # 預設收起 = 狀態，唔屬排版
 
-        btns = QHBoxLayout()
-        self.add_btn = QPushButton(t('ind_add', self._lang))
-        self.add_btn.setObjectName('ind_add_btn')
-        self.add_btn.setProperty('og', 'indbtn')
-        self.add_btn.clicked.connect(self._on_add)
-        btns.addWidget(self.add_btn)
-        self.save_btn = QPushButton(t('ind_save', self._lang))
-        self.save_btn.setObjectName('ind_save_btn')
-        self.save_btn.setProperty('og', 'indbtn')
-        self.save_btn.clicked.connect(self._on_save)
-        btns.addWidget(self.save_btn)
-        self.remove_btn = QPushButton(t('ind_remove', self._lang))
-        self.remove_btn.setObjectName('ind_remove_btn')
-        self.remove_btn.setProperty('og', 'indbtn')
-        self.remove_btn.clicked.connect(self._on_remove)
-        btns.addWidget(self.remove_btn)
-        btns.addStretch(1)
-        v.addLayout(btns)
-
-        # ── 可摺疊詳情（預設收起 = 只有一行掣；展開 = 完整用法 + 每個參數一行）──
-        self.detail_btn = QPushButton(t('ind_detail_show', self._lang))
-        self.detail_btn.setObjectName('ind_detail_toggle')   # E2E hook
-        self.detail_btn.setProperty('og', 'indbtn')
-        self.detail_btn.clicked.connect(self._toggle_detail)
-        v.addWidget(self.detail_btn)
-        self.detail_panel = QWidget()
-        self.detail_panel.setObjectName('ind_detail_panel')
-        self.detail_layout = QVBoxLayout(self.detail_panel)
-        self.detail_layout.setContentsMargins(6, 4, 6, 4)
-        self.detail_layout.setSpacing(2)
-        self.detail_desc = self._detail_lbl('ind_detail_desc', 'inddesc')
-        self.detail_usage = self._detail_lbl('ind_detail_usage', 'indusage')
-        self._detail_head = self._detail_lbl('ind_detail_head', 'indhead')
-        self._detail_notes = {}
-        self.detail_panel.setVisible(False)
-        v.addWidget(self.detail_panel)
-
-        # ── 表格（單選行 → 編輯模式；enabled 欄 checkbox 即時生效）──
-        self.model = _IndModel(self)
-        self.table = QTableView()
-        self.table.setObjectName('ind_table')
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.selectionModel().selectionChanged.connect(self._on_sel_changed)
-        v.addWidget(self.table, 1)
-
-        # ── 底部：總數 / 顯示中 + status ──
-        bottom = QHBoxLayout()
-        self.counts_lbl = QLabel()
-        self.counts_lbl.setObjectName('ind_counts')
-        bottom.addWidget(self.counts_lbl, 1)
-        self.status_lbl = QLabel()
-        self.status_lbl.setObjectName('ind_status')
-        bottom.addWidget(self.status_lbl)
-        v.addLayout(bottom)
-
-        self.def_combo.currentIndexChanged.connect(self._rebuild_param_row)
         self._rebuild_param_row()
-
         self._mgr().add_listener(self._on_mgr_changed)
         theme_mod.add_listener(self._on_theme_changed)
         self._apply_theme_qss(theme_mod.CURRENT)
         self._refresh()
+
+    def _connect_signals(self):
+        self.ind_add_btn.clicked.connect(self._on_add)
+        self.ind_save_btn.clicked.connect(self._on_save)
+        self.ind_remove_btn.clicked.connect(self._on_remove)
+        self.ind_detail_toggle.clicked.connect(self._toggle_detail)
+        self.ind_def_combo.currentIndexChanged.connect(self._rebuild_param_row)
+        self.ind_table.selectionModel().selectionChanged.connect(self._on_sel_changed)
+
+    def _fill_def_combo(self):
+        """頂欄類型 combo：內容 = INDICATOR_DEFS（acronym 語言中立）；tooltip = 一行描寫（跟語言）。"""
+        for i, k in enumerate(self._def_keys):
+            d = indicators.INDICATOR_DEFS[k]
+            self.ind_def_combo.addItem(d.label)
+            self.ind_def_combo.setItemData(i, t(d.desc_key, self._lang), Qt.ToolTipRole)
+
+    def _setup_table(self):
+        self.model = _IndModel(self)
+        self.ind_table.setModel(self.model)
+        self.ind_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ind_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.ind_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ind_table.verticalHeader().setVisible(False)
+
+    @staticmethod
+    def _clear_slot(slot):
+        """清走 slot 入面全部 item（連 `addStretch` 嘅 spacer 一齊清 — 否則每次轉類型都疊多一條）。"""
+        while slot.count():
+            it = slot.takeAt(0)
+            if it is None:
+                break
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
 
     # ── lazy manager（app 內單例；e2e reset_manager_for_test 後本頁 lazy 取新的）──
     def _mgr(self):
@@ -218,22 +194,21 @@ class IndicatorsPage(QWidget):
 
     # ── 頂欄參數編輯器（隨類型重建；range 由 ParamSpec）──
     def _cur_def(self):
-        return indicators.INDICATOR_DEFS[self._def_keys[self.def_combo.currentIndex()]]
+        return indicators.INDICATOR_DEFS[self._def_keys[self.ind_def_combo.currentIndex()]]
 
     def _rebuild_param_row(self, *_):
         d = self._cur_def()
-        for w in list(self._param_spins.values()) + list(self._param_lbls.values()):
-            w.setParent(None)
+        self._clear_slot(self.paramSlot)   # 含上次嘅 stretch
         self._param_spins, self._param_lbls = {}, {}
         # 位置 combo 只列該類型准入位置
-        self.pos_combo.clear()
+        self.ind_pos_combo.clear()
         for pos in d.positions:
-            self.pos_combo.addItem(t(_POS_KEYS[pos], self._lang), pos)
+            self.ind_pos_combo.addItem(t(_POS_KEYS[pos], self._lang), pos)
         for p in d.params:
             lbl = QLabel(t(p.label_key, self._lang))
             lbl.setObjectName(f'ind_paramlbl_{p.key}')
             lbl.setProperty('og', 'indparamlbl')
-            self.param_row.addWidget(lbl)
+            self.paramSlot.addWidget(lbl)
             if p.is_bool:   # #28：開關型參數（MA 逐條線顯示）→ CHECKBOX
                 sp = QCheckBox()
                 sp.setChecked(bool(int(p.default)))
@@ -249,38 +224,32 @@ class IndicatorsPage(QWidget):
                 sp.setValue(float(p.default))
             sp.setObjectName(f'ind_param_{p.key}')   # E2E hook
             sp.setProperty('og', 'indparam')
-            self.param_row.addWidget(sp)
+            self.paramSlot.addWidget(sp)
             self._param_spins[p.key] = sp
             self._param_lbls[p.key] = lbl
-        self.param_row.addStretch(1)
+        self.paramSlot.addStretch(1)
         self._rebuild_detail(d)
 
     # ── 可摺疊詳情：一行描寫 + 完整用法 + 每個參數一行解釋（ticket #21）──
-    def _detail_lbl(self, obj_name, prop):
-        lbl = QLabel()
-        lbl.setObjectName(obj_name)
-        lbl.setProperty('og', prop)
-        lbl.setWordWrap(True)
-        self.detail_layout.addWidget(lbl)
-        return lbl
-
     def _toggle_detail(self):
-        open_it = not self.detail_panel.isVisible()
-        self.detail_panel.setVisible(open_it)
-        self.detail_btn.setText(t('ind_detail_hide' if open_it else 'ind_detail_show', self._lang))
+        open_it = not self.ind_detail_panel.isVisible()
+        self.ind_detail_panel.setVisible(open_it)
+        self.ind_detail_toggle.setText(t('ind_detail_hide' if open_it else 'ind_detail_show', self._lang))
 
     def _rebuild_detail(self, d):
-        """跟頂欄所選類型重建詳情（每個參數一行 → objectName ind_detail_note_<key>）。"""
+        """跟頂欄所選類型重建詳情（每個參數一行 → objectName ind_detail_note_<key>，填進 detailNoteSlot）。"""
         lang = self._lang
-        self.detail_desc.setText('%s %s：%s' % (d.label, t('ind_detail_desc', lang), t(d.desc_key, lang)))
-        self.detail_usage.setText('%s：%s' % (t('ind_detail_use', lang), t(d.usage_key, lang)))
-        self._detail_head.setText(t('ind_detail_params', lang))
-        for w in self._detail_notes.values():
-            w.setParent(None)
+        self.ind_detail_desc.setText('%s %s：%s' % (d.label, t('ind_detail_desc', lang), t(d.desc_key, lang)))
+        self.ind_detail_usage.setText('%s：%s' % (t('ind_detail_use', lang), t(d.usage_key, lang)))
+        self._clear_slot(self.detailNoteSlot)
         self._detail_notes = {}
         for p in d.params:
-            lbl = self._detail_lbl('ind_detail_note_%s' % p.key, 'indnote')   # E2E hook
+            lbl = QLabel()   # E2E hook
+            lbl.setObjectName('ind_detail_note_%s' % p.key)
+            lbl.setProperty('og', 'indnote')
+            lbl.setWordWrap(True)
             lbl.setText('· %s：%s' % (t(p.label_key, lang), t(p.note_key, lang)))
+            self.detailNoteSlot.addWidget(lbl)
             self._detail_notes[p.key] = lbl
 
     @staticmethod
@@ -293,12 +262,12 @@ class IndicatorsPage(QWidget):
     def _fill_editor(self, e):
         """編輯模式：表格所選行填入頂欄。"""
         i = self._def_keys.index(e['def'])
-        self.def_combo.blockSignals(True)
-        self.def_combo.setCurrentIndex(i)
-        self.def_combo.blockSignals(False)
+        self.ind_def_combo.blockSignals(True)
+        self.ind_def_combo.setCurrentIndex(i)
+        self.ind_def_combo.blockSignals(False)
         self._rebuild_param_row()
-        pi = self.pos_combo.findData(e['position'])
-        self.pos_combo.setCurrentIndex(pi if pi >= 0 else 0)
+        pi = self.ind_pos_combo.findData(e['position'])
+        self.ind_pos_combo.setCurrentIndex(pi if pi >= 0 else 0)
         for k, sp in self._param_spins.items():
             if isinstance(sp, QCheckBox):   # #28
                 sp.setChecked(bool(int(e['params'].get(k, 1))))
@@ -306,7 +275,7 @@ class IndicatorsPage(QWidget):
                 sp.setValue(e['params'].get(k, sp.value()))
 
     def _on_sel_changed(self, *_):
-        rows = self.table.selectionModel().selectedRows()
+        rows = self.ind_table.selectionModel().selectedRows()
         if not rows:
             self._sel_id = None
             return
@@ -317,30 +286,30 @@ class IndicatorsPage(QWidget):
     # ── 新增 / 套用 / 移除 ──
     def _on_add(self):
         d = self._cur_def()
-        pos = self.pos_combo.currentData()
+        pos = self.ind_pos_combo.currentData()
         ok, msg_key, _item = self._mgr().add(d.key, pos, self._editor_params(), origin='ind_page')
         self._refresh()   # 🤖 set status 必須喺 refresh 之後
-        self.status_lbl.setText(('✅ ' if ok else '') + t(msg_key, self._lang)
+        self.ind_status.setText(('✅ ' if ok else '') + t(msg_key, self._lang)
                                 if ok else f'❌ {t(msg_key, self._lang)}')
 
     def _on_save(self):
         if not self._sel_id or self._mgr().get(self._sel_id) is None:
-            self.status_lbl.setText(f'⚠️ {t("ind_no_sel", self._lang)}')
+            self.ind_status.setText(f'⚠️ {t("ind_no_sel", self._lang)}')
             return
-        pos = self.pos_combo.currentData()
+        pos = self.ind_pos_combo.currentData()
         ok, msg_key = self._mgr().update(self._sel_id, position=pos,
                                          params=self._editor_params(), origin='ind_page')
         self._refresh()
-        self.status_lbl.setText(('✅ ' if ok else '❌ ') + t(msg_key, self._lang))
+        self.ind_status.setText(('✅ ' if ok else '❌ ') + t(msg_key, self._lang))
 
     def _on_remove(self):
         if not self._sel_id or self._mgr().get(self._sel_id) is None:
-            self.status_lbl.setText(f'⚠️ {t("ind_no_sel", self._lang)}')
+            self.ind_status.setText(f'⚠️ {t("ind_no_sel", self._lang)}')
             return
         ok, msg_key = self._mgr().remove(self._sel_id, origin='ind_page')
         self._sel_id = None
         self._refresh()
-        self.status_lbl.setText(('🗑 ' if ok else '❌ ') + t(msg_key, self._lang))
+        self.ind_status.setText(('🗑 ' if ok else '❌ ') + t(msg_key, self._lang))
 
     # ── 跨頁同步（K 線頁開關 → 本頁表格即時打勾）──
     def _on_mgr_changed(self, origin, kind):
@@ -354,23 +323,23 @@ class IndicatorsPage(QWidget):
         self._update_counts()
 
     def _configure_columns(self):
-        hdr = self.table.horizontalHeader()
+        hdr = self.ind_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(COLUMNS.index('desc'), QHeaderView.Stretch)   # 一行描寫用晒剩返嘅寬度
         widths = {0: 60, 1: 110, 3: 90, 4: 160, 5: 90}
         for col, w in widths.items():
-            self.table.setColumnWidth(col, w)
+            self.ind_table.setColumnWidth(col, w)
 
     def _update_counts(self):
         items = self._mgr().items()
         total = len(items)
         shown = sum(1 for e in items if e['enabled'])
-        self.counts_lbl.setText(
+        self.ind_counts.setText(
             f'{t("ind_count", self._lang)} {total}　‖　'
             f'{t("ind_showing", self._lang)} {shown}')
         if total == 0:
-            self.status_lbl.setText(t('ind_empty', self._lang))
+            self.ind_status.setText(t('ind_empty', self._lang))
 
     # ── theme / i18n ──
     def _apply_theme_qss(self, name):
@@ -385,13 +354,11 @@ class IndicatorsPage(QWidget):
 
     def retranslate(self, lang):
         self._lang = lang
-        self.add_btn.setText(t('ind_add', lang))
-        self.save_btn.setText(t('ind_save', lang))
-        self.remove_btn.setText(t('ind_remove', lang))
-        self.detail_btn.setText(t('ind_detail_hide' if self.detail_panel.isVisible()
-                                  else 'ind_detail_show', lang))
+        apply_text(self, _TEXT, lang)   # 三個動作掣（objectName → i18n key）
+        self.ind_detail_toggle.setText(t('ind_detail_hide' if self.ind_detail_panel.isVisible()
+                                         else 'ind_detail_show', lang))
         for i, k in enumerate(self._def_keys):   # 類型 combo tooltip（一行描寫）跟語言
-            self.def_combo.setItemData(i, t(indicators.INDICATOR_DEFS[k].desc_key, lang), Qt.ToolTipRole)
+            self.ind_def_combo.setItemData(i, t(indicators.INDICATOR_DEFS[k].desc_key, lang), Qt.ToolTipRole)
         self._rebuild_param_row()   # 位置/參數 label + 詳情面板 跟語言
         self._refresh()             # headerData / desc / position / counts 全部跟語言重建
 

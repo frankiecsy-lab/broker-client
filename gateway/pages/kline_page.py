@@ -15,6 +15,10 @@
   實例屬性，自動用新實例。
 - 開關掣列 `ind_bar`：每個已配置指標一個 checkable 掣（objectName `ind_toggle_<id>` +
   property `og="indtoggle"`），插喺 K 線圖正上方；樣式經 `_EXTRA_QSS_TPL`（頁面級，跟 theme）。
+- **排版**：`gateway/ui/kline_page.ui`（Designer 可調）— 0 margin 外殼 + 空 `embeddedSlot`（填嵌入內容）、
+  `ind_bar` 掣列（`ind_bar_lbl` + 空 `indToggleSlot`，掣數量 = 已配置指標 → 屬資料）。
+  🤖 `gui_kline.py` 本身照**零改動**：佢個 central layout 喺佢自己 code 砌 → 唔 promote、唔入 `.ui`；
+  掣列「插邊」屬行為（要插進嗰個 foreign layout 嘅 K 線圖上方），所以 `.ui` 只定義控件、本檔負責插位。
 - 配置變更雙向同步：本頁掣 → `mgr.set_enabled(origin='kline_page')`；管理頁改 → listener
   rebuild 掣列 + chart `_redraw`（sig/cfg 比對自動重建 panel 與重算）。
 
@@ -31,14 +35,14 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton,  # noqa: E402
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
 
 from gateway import indicators  # noqa: E402 — 指標單一事實來源（DEFS + Manager + IndicatorKlineChart）
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402 — 掣列文案三語（指標名 acronym 語言中立）
 from gateway.pages import gui_kline as gk  # noqa: E402 — 同目錄 app 組件（本檔對佢零改動）
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 # gui_kline QSS template 引用嘅 C_* 常數（C_UP/C_DOWN 係紅漲/綠跌語義色，跟 theme 不變）
 _C_KEYS = ('C_WINDOW', 'C_SURFACE', 'C_CARD', 'C_BORDER', 'C_TEXT',
@@ -58,6 +62,10 @@ QPushButton[og="indtoggle"] {
 QPushButton[og="indtoggle"]:hover { color: $text; border-color: $accent; }
 QPushButton[og="indtoggle"]:checked { background: $accent; color: #FFFFFF; border-color: $accent; font-weight: bold; }
 """)
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {'kline_page': {}}   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
+_TEXT = {'ind_bar_lbl': 'ind_show_label'}
 
 
 def _rebuild_qss() -> str:
@@ -86,16 +94,15 @@ class KlinePage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName('kline_page')
-        self.setAttribute(Qt.WA_StyledBackground, True)   # bare QWidget 要呢個先會畫頁面級 QSS background
+        apply_ui(self, 'kline_page')   # 排版（0 margin 外殼 + 指標掣列 ind_bar）全部喺 `.ui`
+        stamp(self, _STAMP)            # og / WA_StyledBackground：Designer 帶唔住 dynamic property
         self._lang = DEFAULT_LANG
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
 
         # ── 嵌入 gui_kline.MainWindow（隱藏 top-level；保留引用 alive 俾 thread lifecycle）──
+        #    內容屬資料（gui_kline 零改動）→ 填進 `.ui` 預留嘅 embeddedSlot
         self._win = gk.MainWindow()          # 唔 show — 只係 take 佢嘅 central widget
         central = self._win.takeCentralWidget()
-        v.addWidget(central, 1)
+        self.embeddedSlot.addWidget(central, 1)
 
         # ── 指標（ticket #19）：換 chart 實例為 IndicatorKlineChart（零改動 gui_kline）──
         #    MainWindow._on_update 讀 self.chart 實例屬性 → 換咗即自動用新實例
@@ -108,23 +115,17 @@ class KlinePage(QWidget):
         lay.insertWidget(idx if idx >= 0 else 0, chart, 3)   # stretch 同原 addWidget(self.chart, stretch=3)
         self._win.chart = chart
 
-        # ── 開關掣列（插喺 K 線圖正上方；無配置 → 隱藏）──
-        self.ind_bar = QWidget()
-        self.ind_bar.setObjectName('ind_bar')
-        self._ind_bar_layout = QHBoxLayout(self.ind_bar)
-        self._ind_bar_layout.setContentsMargins(6, 2, 6, 0)
-        self._ind_bar_lbl = QLabel(t('ind_show_label', self._lang))
-        self._ind_bar_lbl.setObjectName('ind_bar_lbl')
-        self._ind_bar_layout.addWidget(self._ind_bar_lbl)
+        # ── 開關掣列：控件喺 `.ui`（ind_bar / ind_bar_lbl / indToggleSlot）；呢度只負責**插位** —
+        #    插進嵌入 central layout 嘅 K 線圖正上方（gui_kline 個 layout 喺佢自己 code 砌）──
         self._ind_toggles = {}
-        self._ind_bar_layout.addStretch(1)
         bar_idx = (idx if idx >= 0 else 0)
         lay.insertWidget(bar_idx, self.ind_bar)          # chart 剛喺 idx → 插喺 idx 即掣列喺圖上面
 
         self._mgr = indicators.get_manager()
         chart.set_indicator_manager(self._mgr)
         self._mgr.add_listener(self._on_indicators_changed)
-        self._rebuild_toggle_bar()
+        self._retranslate_widgets()   # `.ui` 內嘅文字屬裝飾 → 一律跟語言覆寫
+        self._rebuild_toggle_bar()    # 掣數量 = 已配置指標（屬資料）→ 填進 indToggleSlot
 
         self._quit_done = False
         app = QApplication.instance()
@@ -186,7 +187,7 @@ class KlinePage(QWidget):
             btn.setChecked(e['enabled'])
             btn.setToolTip(self._ind_tooltip(d, e['position'], self._lang))
             btn.toggled.connect(lambda on, iid=e['id']: self._on_ind_toggle(iid, on))
-            self._ind_bar_layout.insertWidget(1, btn)      # label 之後、stretch 之前
+            self.indToggleSlot.addWidget(btn)   # `.ui` 嘅空 slot（label 之後、stretch 之前）
             self._ind_toggles[e['id']] = btn
 
     @staticmethod
@@ -217,6 +218,9 @@ class KlinePage(QWidget):
         self._win.close()
 
     # ── i18n ──────────────────────────────────────────────────────
+    def _retranslate_widgets(self):
+        apply_text(self, _TEXT, self._lang)   # 掣列前綴 label（objectName → i18n key）
+
     def retranslate(self, lang: str):
         """外殼 / standalone window 語言切換時調用 — 同步入嵌入頁自己嘅語言 combo（繁中/EN）
         + 指標掣列文案（三語；指標名 acronym 語言中立）。
@@ -225,7 +229,7 @@ class KlinePage(QWidget):
         if self._win.lang_combo.currentIndex() != idx:
             self._win.lang_combo.setCurrentIndex(idx)
         self._lang = lang
-        self._ind_bar_lbl.setText(t('ind_show_label', lang))
+        self._retranslate_widgets()
         for e in self._mgr.items():
             btn = self._ind_toggles.get(e['id'])
             d = indicators.INDICATOR_DEFS.get(e['def'])

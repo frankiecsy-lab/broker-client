@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>StrategiesPage</class>
+ <widget class="QWidget" name="strategies_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 表先（多選 → 刪除；單行 → 載入編輯）；欄寬／欄頭行為屬資料 → strategies_page.py -->
+   <item>
+    <widget class="QTableView" name="str_table">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <!-- 基本欄：名稱 + 訊號BUFFER；買入價／數量屬固定欄（v1 read-only） -->
+   <item>
+    <layout class="QHBoxLayout" name="formRow">
+     <property name="spacing"><number>4</number></property>
+     <item>
+      <widget class="QLabel" name="str_name_lbl">
+       <property name="text"><string>名稱</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="str_name_edit">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="placeholderText"><string>策略名稱</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="str_buffer_lbl">
+       <property name="text"><string>訊號BUFFER(條)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="str_buffer_spin"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="str_price_lbl">
+       <property name="text"><string>買入價：市價</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="str_qty_lbl">
+       <property name="text"><string>數量：最低一手</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 買／賣兩組條件編輯器（分數制）：combo／分數行屬排版；
+        動態參數欄由 strategies_page.py 按 strategies.CONDITION_DEFS 填進 str_*_paramSlot，
+        已加條件（draft）逐條填進 str_*_rulesSlot —— 數量屬資料，唔寫落呢度 -->
+   <item>
+    <layout class="QHBoxLayout" name="editorsRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QGroupBox" name="str_buy_group">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="title"><string>買入條件</string></property>
+       <layout class="QVBoxLayout" name="str_buy_col">
+        <property name="leftMargin"><number>6</number></property>
+        <property name="topMargin"><number>4</number></property>
+        <property name="rightMargin"><number>6</number></property>
+        <property name="bottomMargin"><number>4</number></property>
+        <property name="spacing"><number>4</number></property>
+        <item>
+         <layout class="QHBoxLayout" name="str_buy_typeRow">
+          <property name="spacing"><number>4</number></property>
+          <item>
+           <widget class="QComboBox" name="str_buy_type"/>
+          </item>
+          <item>
+           <widget class="QComboBox" name="str_buy_side"/>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="str_buy_paramSlot"/>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="str_buy_scoreRow">
+          <property name="spacing"><number>4</number></property>
+          <item>
+           <widget class="QLabel" name="str_buy_scorelbl">
+            <property name="text"><string>分數</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="str_buy_score"/>
+          </item>
+          <item>
+           <widget class="QPushButton" name="str_buy_add_btn">
+            <property name="text"><string>＋ 加條件</string></property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="str_buy_scoreStretch">
+            <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+            <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="str_buy_rulesSlot"/>
+        </item>
+        <item>
+         <spacer name="str_buy_bottomStretch">
+          <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+          <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="str_sell_group">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="title"><string>賣出條件</string></property>
+       <layout class="QVBoxLayout" name="str_sell_col">
+        <property name="leftMargin"><number>6</number></property>
+        <property name="topMargin"><number>4</number></property>
+        <property name="rightMargin"><number>6</number></property>
+        <property name="bottomMargin"><number>4</number></property>
+        <property name="spacing"><number>4</number></property>
+        <item>
+         <layout class="QHBoxLayout" name="str_sell_typeRow">
+          <property name="spacing"><number>4</number></property>
+          <item>
+           <widget class="QComboBox" name="str_sell_type"/>
+          </item>
+          <item>
+           <widget class="QComboBox" name="str_sell_side"/>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="str_sell_paramSlot"/>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="str_sell_scoreRow">
+          <property name="spacing"><number>4</number></property>
+          <item>
+           <widget class="QLabel" name="str_sell_scorelbl">
+            <property name="text"><string>分數</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="str_sell_score"/>
+          </item>
+          <item>
+           <widget class="QPushButton" name="str_sell_add_btn">
+            <property name="text"><string>＋ 加條件</string></property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="str_sell_scoreStretch">
+            <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+            <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="str_sell_rulesSlot"/>
+        </item>
+        <item>
+         <spacer name="str_sell_bottomStretch">
+          <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+          <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="btnsRow">
+     <item>
+      <widget class="QPushButton" name="str_add_btn">
+       <property name="text"><string>新增策略</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="str_save_btn">
+       <property name="text"><string>套用修改</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="str_remove_btn">
+       <property name="text"><string>刪除所選</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="str_clear_btn">
+       <property name="text"><string>清空表單</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="btnsStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomRow">
+     <item>
+      <widget class="QLabel" name="str_counts">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="str_status">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

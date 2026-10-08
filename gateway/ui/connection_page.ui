@@ -1,0 +1,343 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ConnectionPage</class>
+ <widget class="ConnectionPage" name="connection_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1100</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>連綫測試</string>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="leftMargin"><number>24</number></property>
+   <property name="topMargin"><number>24</number></property>
+   <property name="rightMargin"><number>24</number></property>
+   <property name="bottomMargin"><number>24</number></property>
+   <item>
+    <widget class="QWidget" name="card_header" native="true">
+     <layout class="QVBoxLayout" name="headerLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>24</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>24</number></property>
+      <item>
+       <widget class="QLabel" name="title_lbl">
+        <property name="text">
+         <string>連綫測試</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="headerGap">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeType">
+         <enum>QSizePolicy::Policy::Fixed</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>10</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="body_lbl">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string>編輯 config.json 參數，並即時測試 FUTU OpenD 同 IB Gateway 嘅連線狀態。</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="card_config" native="true">
+     <layout class="QVBoxLayout" name="configLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>24</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>24</number></property>
+      <item>
+       <widget class="QLabel" name="cfg_title_lbl">
+        <property name="text">
+         <string>config.json 參數</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="cfgTitleGap">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeType">
+         <enum>QSizePolicy::Policy::Fixed</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>12</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <layout class="QGridLayout" name="formGrid">
+        <property name="horizontalSpacing"><number>10</number></property>
+        <property name="verticalSpacing"><number>10</number></property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="futu_group_lbl">
+          <property name="text">
+           <string>富途 Futu OpenD</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLabel" name="host_lbl_a">
+          <property name="text">
+           <string>Host</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="2">
+         <widget class="QLineEdit" name="futu_host"/>
+        </item>
+        <item row="0" column="3">
+         <widget class="QLabel" name="port_lbl_a">
+          <property name="text">
+           <string>Port</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="4">
+         <widget class="QLineEdit" name="futu_port"/>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="ib_group_lbl">
+          <property name="text">
+           <string>IB Gateway（TWS）</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="host_lbl_b">
+          <property name="text">
+           <string>Host</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="2">
+         <widget class="QLineEdit" name="ib_host"/>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLabel" name="port_lbl_b">
+          <property name="text">
+           <string>Port</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="4">
+         <widget class="QLineEdit" name="ib_port"/>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLabel" name="kline_lbl">
+          <property name="text">
+           <string>K 線數量 (kline_num)</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="2">
+         <widget class="QLineEdit" name="kline_num"/>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="saveRow">
+        <item>
+         <widget class="QPushButton" name="save_cfg_btn">
+          <property name="text">
+           <string>保存 config.json</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="saveGap">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Policy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>16</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QLabel" name="cfg_status">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="card_probe" native="true">
+     <layout class="QVBoxLayout" name="probeLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>24</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>24</number></property>
+      <item>
+       <widget class="QLabel" name="probe_title_lbl">
+        <property name="text">
+         <string>連線狀態及速度測試</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="probeTitleGap">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeType">
+         <enum>QSizePolicy::Policy::Fixed</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>12</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="probeBtnRow">
+        <item>
+         <widget class="QPushButton" name="probe_futu_btn">
+          <property name="text">
+           <string>FUTU OpenD 連綫測試</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="probeBtnGap">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Policy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>12</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="probe_ib_btn">
+          <property name="text">
+           <string>IB Gateway 連綫測試（clientId=98）</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <spacer name="probeResultGap">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeType">
+         <enum>QSizePolicy::Policy::Fixed</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>14</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="futu_result">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="resultGap">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeType">
+         <enum>QSizePolicy::Policy::Fixed</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>10</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="ib_result">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="bottomStretch">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

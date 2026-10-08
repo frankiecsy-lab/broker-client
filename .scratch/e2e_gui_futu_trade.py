@@ -5,6 +5,9 @@ Run: python .scratch/e2e_gui_futu_trade.py   (from project root; needs a display
 
 Flow (all via FakeCtx / FakeQuoteCtx injected into the worker thread through _ctx_factory):
 1. Page construction + i18n retranslate (3 languages)
+1b. `.ui` 骨架（futu_trade_page.ui）：Designer margin/spacing 照載入、兩欄/四張 card/全部表單控件
+    由 `.ui` 建出、欄位比例用 sizePolicy stretch、og/role/WA_StyledBackground 由 _STAMP 補返；
+    表格欄數、combo item、QButtonGroup 呢啲「數量」屬資料 → 由 code 填進 `.ui` 嘅 slot
 2. 自動連線（構造後 timer 自動 connect — 冇連線/斷開按鍵）→ account list —
    帳戶表只顯示 ACTIVE（DISABLED 被 filter 掉）；
    模擬/實盤 toggle 切換環境，所有資料跟住重新 query（唔混模擬同實盤）；
@@ -40,14 +43,14 @@ import time
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtCore import Qt, QMargins  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGridLayout, QMessageBox, QSizePolicy  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import gateway.pages.futu_trade_page as ftp_mod  # noqa: E402
 import modules.symbol_search as ss  # noqa: E402 — FakeSearchDir 用佢嘅 _T2S（同真 index 同一正規化）
 from futu import RET_OK  # noqa: E402
-from gateway.app import OneGateWindow  # noqa: E402
+from gateway.app import NAV_DIRECT, OneGateWindow  # noqa: E402
 
 
 class FakeCtx:
@@ -308,6 +311,46 @@ def main():
     wait_for(app, lambda: '#1E1F22' in page.styleSheet(), what='theme dark QSS', timeout=3)
     check('theme dark → page QSS follows', True)
 
+    # ── Part 1b：`.ui` 骨架（排版全部喺 gateway/ui/futu_trade_page.ui；「數量」屬資料 → code 填）──
+    lay = page.layout()
+    check('`.ui` root objectName + Designer margin/spacing 照載入',
+          page.objectName() == 'futu_trade_page' and lay is not None
+          and lay.contentsMargins() == QMargins(24, 24, 24, 24) and lay.spacing() == 6)
+    check('兩欄主區 + 四張 card + 全部表單控件由 `.ui` 建出（objectName 即身份契約）',
+          all(getattr(page, n, None) is not None for n in
+              ('header_card', 'cols_wrap', 'left_col', 'right_col', 'orders_card', 'pos_card',
+               'conn_card', 'order_card', 'orders_table', 'pos_table', 'acc_table', 'code_cell',
+               'code_edit', 'price_edit', 'qty_edit', 'otype_combo', 'tif_combo', 'market_combo',
+               'env_sim_btn', 'env_real_btn', 'buy_btn', 'sell_btn', 'unlock_status_lbl')))
+    check('欄位/卡片比例喺 `.ui`（sizePolicy stretch = Designer Layout Stretch）',
+          page.left_col.sizePolicy().horizontalStretch() == 3
+          and page.right_col.sizePolicy().horizontalStretch() == 2
+          and page.cols_wrap.sizePolicy().verticalStretch() == 1
+          and page.orders_card.sizePolicy().verticalStretch() == 3
+          and page.pos_card.sizePolicy().verticalStretch() == 2
+          and page.header_card.sizePolicy().verticalPolicy() != QSizePolicy.Fixed)
+    grids = {g.objectName(): g for g in page.findChildren(QGridLayout)}
+    check('QGridLayout 間距屬性名必須 horizontalSpacing/verticalSpacing（hspacing 會被 uic 靜靜丟掉）',
+          grids['orderGrid'].horizontalSpacing() == 10 and grids['orderGrid'].verticalSpacing() == 8)
+    check('og / role / WA_StyledBackground 由 _STAMP 補返（Designer 帶唔住 dynamic property）',
+          page.testAttribute(Qt.WA_StyledBackground)
+          and page.orders_card.property('og') == 'pagecard'
+          and page.order_card.property('og') == 'pagecard'
+          and page.title_lbl.property('role') == 'pagetitle'
+          and page.code_lbl.property('role') == 'formlabel'
+          and page.buy_btn.property('og') == 'buybtn' and page.env_sim_btn.property('og') == 'envbtn')
+    check('頁面 QSS 有根（objectName → QSS cascade）', 'QWidget#futu_trade_page' in page.styleSheet())
+    check('表格欄數 / 高度上限：欄數由 code（ACC/ORDER/POS_COLS），位置同 maxH 由 `.ui`',
+          page.acc_table.maximumHeight() == 160
+          and page.acc_table.columnCount() == len(ftp_mod.ACC_COLS)
+          and page.orders_table.columnCount() == len(ftp_mod.ORDER_COLS)
+          and page.pos_table.columnCount() == len(ftp_mod.POS_COLS))
+    check('combo item / 環境 exclusive toggle 由 code 填（加選項唔使改 `.ui`）',
+          page.market_combo.count() == len(ftp_mod.MARKET_FILTERS)
+          and page.otype_combo.count() == len(ftp_mod.ORDER_TYPES)
+          and page.tif_combo.count() == len(ftp_mod.TIF_OPTIONS)
+          and page._env_group.exclusive() and page.env_sim_btn.isChecked())
+
     # ── Part 2：自動連線（冇按鈕 — 構造後 timer 觸發）→ account list（ACTIVE filter + SIM/REAL toggle）──
     print('── Part 2: auto-connect + env/market filters ──')
     check('no connect/disconnect buttons (用戶要求：刪咗)',
@@ -552,8 +595,9 @@ def main():
           all(b.contextMenuPolicy() == Qt.CustomContextMenu
               for b in list(win.nav_btns.values()) + list(win.menu_btns.values())))
     # 用戶要求（MINOR CHANGE）：K線/全功能/標的列表 收埋喺「測試」子選單；連綫測試喺「設定」
-    check('nav 分組：直接按鈕得 首頁/行情/FUTU 交易/標的收藏/指標管理；測試/設定 為子選單',
-          set(win.nav_btns) == {'home', 'quotes', 'futu_trade', 'favorites', 'indicators'}
+    check('nav 分組：直接按鈕得 首頁/行情/FUTU 交易/標的收藏/指標/策略管理；測試/設定 為子選單',
+          set(win.nav_btns) == set(NAV_DIRECT)
+          and {'strategies'} <= set(win.nav_btns)   # ticket #21 加咗策略管理，斷言跟 registry
           and set(win.menu_btns) == {'test', 'settings'}
           # 用戶要求（ticket #20）：主菜單唔再要有「預留頁面」佔位
           and not hasattr(win, 'reserved_btn')

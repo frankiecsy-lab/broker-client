@@ -58,7 +58,7 @@ def main():
     q.show()
     pump()
     cell = q.cells[0]
-    results['行情頁 cell.symbol_edit'] = probe('行情頁 cell.symbol_edit', cell.symbol_edit, cell.completer)
+    results['行情頁 cell.cell_symbol'] = probe('行情頁 cell.cell_symbol', cell.cell_symbol, cell.completer)
 
     k = KlinePage()
     k.show()

@@ -10,6 +10,8 @@
 - **數據**：modules/market_pulse.fetch_pulse（QThread；subscribe K_DAY → 日K + snapshot；
   逐個失敗如實）。手動刷新 + 60 秒自動刷新 + 更新時間。
 - **Theme/i18n**：卡面顏色直接食 theme palette（listener 重畫）；文字全部 t()。
+- **排版**：`gateway/ui/home_page.ui`（Designer 可調 margin / 分區位置 / grid 間距）；卡嘅數量屬資料，
+  由 HOME_INDICES 生成後填進 `.ui` 預留嘅 `grid_hk/cn/us`。
 
 單獨運行：`python gateway/pages/home_page.py`。
 """
@@ -26,12 +28,13 @@ if _ROOT not in sys.path:
 from PySide6.QtCore import QPointF, Qt, QThread, QTimer, Signal  # noqa: E402
 from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPen,  # noqa: E402
                            QPolygonF)
-from PySide6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QPushButton,  # noqa: E402
-                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QSizePolicy, QWidget  # noqa: E402
 
 from gateway import theme as theme_mod  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 from gateway.pages import gui_kline as gk  # noqa: E402  # 紅漲綠跌常數單一來源（gk.C_UP/C_DOWN）
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 # ── 首页指數清單（用戶要改就改呢度：code + 分區 + 三語名 key）──
 HOME_INDICES = (
@@ -50,10 +53,22 @@ HOME_INDICES = (
     {'code': 'US.VIXY', 'group': 'US', 'key': 'idx_vix'},
 )
 GROUPS = ('HK', 'CN', 'US')
-GROUP_KEYS = {'HK': 'home_grp_hk', 'CN': 'home_grp_cn', 'US': 'home_grp_us'}
+# 分區 → `.ui` 入面個 header objectName（同名即 i18n key；`grid_<區 lowercase>` 係對應嘅空 grid slot）
+GROUP_UI = {'HK': 'home_grp_hk', 'CN': 'home_grp_cn', 'US': 'home_grp_us'}
 COLS = 4                      # 每區每行卡數（密集）
 AUTO_REFRESH_MS = 60_000      # 60 秒自動刷新
 KLINE_NUM = 60                # sparkline 日K 根數
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {
+    'home_page': {}, 'home_content': {},          # bare QWidget 要 WA_StyledBackground 先食到背景 QSS
+    'home_grp_hk': {'role': 'grphead'}, 'home_grp_cn': {'role': 'grphead'},
+    'home_grp_us': {'role': 'grphead'},
+    'home_refresh_btn': {'og': 'homebtn'},
+}
+_TEXT = {'home_title': 'page_home_title', 'home_refresh_btn': 'home_refresh',
+         **{v: v for v in GROUP_UI.values()}}   # 分區 header：objectName 即 i18n key
+_TIPS = {'home_grp_us': 'home_us_proxy_note'}   # 美股 ETF 代理 — 如實講
 
 
 def _fmt_num(v, dec=2):
@@ -229,76 +244,38 @@ class _IndexCard(QWidget):
 class HomePage(QWidget):
     def __init__(self, pulse_fetcher=None):
         super().__init__()
-        self.setObjectName('home_page')
+        apply_ui(self, 'home_page')       # 排版喺 .ui（Designer 可調 margin / 分區位置 / grid 間距）
+        stamp(self, _STAMP)
         self._lang = DEFAULT_LANG
         self._pulse_fetcher = pulse_fetcher   # e2e 注入 fake；None → lazy market_pulse
         self._worker = None
         self._pal = dict(theme_mod.THEMES[theme_mod.CURRENT])
         self._cards = {}                      # code → _IndexCard
+        self._grp_lbls = {g: getattr(self, GROUP_UI[g]) for g in GROUPS}
+        self._connect_signals()
+        self._build_cards()
 
-        v = QVBoxLayout(self)
-        v.setContentsMargins(12, 8, 12, 8)
-        v.setSpacing(6)
+        theme_mod.add_listener(self._on_theme_changed)
+        self._apply_theme_qss(theme_mod.CURRENT)
+        self._refresh_data()
 
-        # ── 頂欄：標題 + 刷新 + 更新時間/狀態 ──
-        top = QHBoxLayout()
-        self.title_lbl = QLabel(t('page_home_title', self._lang))
-        self.title_lbl.setObjectName('home_title')
-        top.addWidget(self.title_lbl)
-        top.addStretch(1)
-        self.updated_lbl = QLabel()
-        self.updated_lbl.setObjectName('home_updated')
-        top.addWidget(self.updated_lbl)
-        self.refresh_btn = QPushButton(t('home_refresh', self._lang))
-        self.refresh_btn.setObjectName('home_refresh_btn')
-        self.refresh_btn.setProperty('og', 'homebtn')
-        self.refresh_btn.clicked.connect(self._refresh_data)
-        top.addWidget(self.refresh_btn)
-        v.addLayout(top)
-        self.status_lbl = QLabel()
-        self.status_lbl.setObjectName('home_status')
-        v.addWidget(self.status_lbl)
+    def _connect_signals(self):
+        self.home_refresh_btn.clicked.connect(self._refresh_data)
+        self._timer = QTimer(self)            # 自動刷新
+        self._timer.setInterval(AUTO_REFRESH_MS)
+        self._timer.timeout.connect(self._refresh_data)
+        self._timer.start()
 
-        # ── 內容：ScrollArea + 分區 grid ──
-        scroll = QScrollArea()
-        scroll.setObjectName('home_scroll')
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        content = QWidget()
-        content.setObjectName('home_content')
-        cv = QVBoxLayout(content)
-        cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(10)
-        self._grp_lbls = {}
+    def _build_cards(self):
+        """卡由 HOME_INDICES 生成，填進 `.ui` 預留嘅 grid_hk/cn/us（數量屬資料、排版屬 UI）。"""
         for g in GROUPS:
-            hdr = QLabel(t(GROUP_KEYS[g], self._lang))
-            hdr.setObjectName('home_grp')
-            if g == 'US':
-                hdr.setToolTip(t('home_us_proxy_note', self._lang))
-            cv.addWidget(hdr)
-            self._grp_lbls[g] = hdr
-            grid = QGridLayout()
-            grid.setSpacing(10)
+            grid = getattr(self, f'grid_{g.lower()}')
             for i, entry in enumerate(e for e in HOME_INDICES if e['group'] == g):
                 card = _IndexCard(self, entry)
                 self._cards[entry['code']] = card
                 grid.addWidget(card, i // COLS, i % COLS)
             for c in range(COLS):
                 grid.setColumnStretch(c, 1)
-            cv.addLayout(grid)
-        cv.addStretch(1)
-        scroll.setWidget(content)
-        v.addWidget(scroll, 1)
-
-        # ── 自動刷新 ──
-        self._timer = QTimer(self)
-        self._timer.setInterval(AUTO_REFRESH_MS)
-        self._timer.timeout.connect(self._refresh_data)
-        self._timer.start()
-
-        theme_mod.add_listener(self._on_theme_changed)
-        self._apply_theme_qss(theme_mod.CURRENT)
-        self._refresh_data()
 
     def _fetcher(self):
         if self._pulse_fetcher is None:
@@ -310,7 +287,7 @@ class HomePage(QWidget):
     def _refresh_data(self):
         if self._worker is not None and self._worker.isRunning():
             return
-        self.status_lbl.setText(t('home_loading', self._lang))
+        self.home_status.setText(t('home_loading', self._lang))
         codes = [e['code'] for e in HOME_INDICES]
         self._worker = _PulseWorker(self._fetcher(), codes, self)
         self._worker.done.connect(self._on_done)
@@ -321,11 +298,11 @@ class HomePage(QWidget):
         for code, card in self._cards.items():
             card.set_row(by_code.get(code))
         now = datetime.datetime.now().strftime('%H:%M:%S')
-        self.updated_lbl.setText(f'{t("home_updated_at", self._lang)} {now}')
+        self.home_updated.setText(f'{t("home_updated_at", self._lang)} {now}')
         if not ok:
-            self.status_lbl.setText(msg)   # 🤖 set status 要喺 refresh 之後（一貫教訓）
+            self.home_status.setText(msg)   # 🤖 set status 要喺 refresh 之後（一貫教訓）
         else:
-            self.status_lbl.setText('')
+            self.home_status.setText('')
 
     # ── theme / i18n ──
     def _apply_theme_qss(self, name):
@@ -343,12 +320,9 @@ class HomePage(QWidget):
 
     def retranslate(self, lang):
         self._lang = lang
-        self.title_lbl.setText(t('page_home_title', lang))
-        self.refresh_btn.setText(t('home_refresh', lang))
-        for g, lbl in self._grp_lbls.items():
-            lbl.setText(t(GROUP_KEYS[g], lang))
-            if g == 'US':
-                lbl.setToolTip(t('home_us_proxy_note', lang))
+        apply_text(self, _TEXT, lang)
+        for obj, key in _TIPS.items():
+            getattr(self, obj).setToolTip(t(key, lang))
         for card in self._cards.values():
             card.update()   # 卡面文字喺 paintEvent 即時 t()
 
@@ -357,7 +331,7 @@ _PAGE_QSS = """
 QWidget#home_page { background-color: $window; }
 QWidget#home_content, QScrollArea#home_scroll { background-color: $window; border: none; }
 QLabel#home_title { color: $text; font-size: 16px; font-weight: bold; }
-QLabel#home_grp { color: $text; font-size: 13px; font-weight: bold; padding: 2px; }
+QLabel[role="grphead"] { color: $text; font-size: 13px; font-weight: bold; padding: 2px; }
 QLabel#home_updated, QLabel#home_status { color: $muted; font-size: 11px; }
 QPushButton[og="homebtn"] { color: $muted; background: transparent; border: 1px solid $border;
     border-radius: 4px; padding: 5px 12px; font-size: 12px; }

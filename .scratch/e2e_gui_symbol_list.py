@@ -5,6 +5,8 @@ Run: python .scratch/e2e_gui_symbol_list.py   (from project root; QT_QPA_PLATFOR
 
 Flow:
 1. shell 註冊：'symbol_list' in PAGE_KEYS
+   + `.ui` 骨架：root objectName / Designer margin-spacing / 靜態控件 / filterSlot 按 registry 填 /
+     `og`+`WA_StyledBackground` 由 _STAMP 補返 / QSS 有根
 2. 構造：model rows = 全 entries；4 欄 header；market/type 顯示翻譯；
    🤖 name 欄繁中/簡中/英文自動切換（display_for 真路徑：zh_hk s2t 繁 / zh_cn 簡原樣 / en name_en fallback）
 3. FILTER：市場 HK → 淨返 HK；種類 WARRANT → 入 w1（有窩輪標的 + 計數）；exclusive
@@ -26,12 +28,14 @@ from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QMargins, Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
 import gateway.state_store as state_store  # noqa: E402
 import modules.symbol_search as ss  # noqa: E402  # FakeDir.display_name 委派真 display_for（三語契約）
 from gateway.app import PAGE_KEYS  # noqa: E402
-from gateway.pages.symbol_list_page import SymbolListPage  # noqa: E402
+from gateway.pages.symbol_list_page import (MARKETS, TYPES,  # noqa: E402
+                                            SymbolListPage)
 
 FAILURES = []
 
@@ -154,9 +158,28 @@ def main():
     check('objectName = symbol_list_page', page.objectName() == 'symbol_list_page')
     check(f'初始 model = 全部 {len(ENTRIES)} entries', page.model.rowCount() == len(ENTRIES))
 
+    # ── Part 1b：`.ui` 骨架（排版喺 gateway/ui/symbol_list_page.ui；FILTER 掣數量屬資料 → 填進 slot）──
+    lay = page.layout()
+    check('`.ui` root objectName + Designer margin/spacing 照載入',
+          page.objectName() == 'symbol_list_page' and lay is not None
+          and lay.contentsMargins() == QMargins(10, 8, 10, 8) and lay.spacing() == 6)
+    check('靜態控件全部由 `.ui` 建出（objectName 即身份契約）',
+          all(getattr(page, n, None) is not None for n in
+              ('sl_search', 'sl_update_btn', 'sl_back_btn', 'sl_crumb', 'sl_table',
+               'sl_counts', 'sl_status')))
+    check('FILTER 兩組按 MARKETS/TYPES 生成並填進 filterSlot（加市場／種類唔使改 `.ui`）',
+          page.filterSlot.count() == len(MARKETS) + len(TYPES) + 1
+          and all(page.findChild(QPushButton, f'sl_f_{k}') is not None
+                  for k in tuple(MARKETS) + tuple(TYPES)))
+    check('og / WA_StyledBackground 由 _STAMP 補返（Designer 帶唔住 dynamic property）',
+          page.sl_update_btn.property('og') == 'slbtn'
+          and page._mkt_btns['HK'].property('og') == 'filterbtn'
+          and page.testAttribute(Qt.WA_StyledBackground))
+    check('頁面 QSS 有根（objectName → QSS cascade）',
+          'QWidget#symbol_list_page' in page.styleSheet())
+
     # ── Part 2：表格內容（翻譯 type / 語言 name）──
     print('── Part 2: table content ──')
-    from PySide6.QtCore import Qt
     row_fut = next(r for r in range(page.model.rowCount())
                    if page.model.index(r, 0).data() == 'HK.HSImain')
     check('type 欄顯示翻譯（FUTURE → 「期貨」）',
@@ -213,7 +236,7 @@ def main():
           page._mode == 'w2' and page.model.rowCount() == 2
           and page.model.index(0, 0).data() == '認購證' and page.model.index(0, 1).data() == '1'
           and page.model.index(1, 0).data() == '認沽證')
-    crumb = page.crumb_lbl.text()
+    crumb = page.sl_crumb.text()
     check('面包屑：窩輪 ▸ 標的名（繁簡任一種）',
           '窩輪' in crumb and ('腾讯' in crumb or '騰訊' in crumb))
     page._on_cell_clicked(0, 0)   # 認購證 → w3
@@ -223,7 +246,7 @@ def main():
           and page.model.index(0, 0).data() == 'HK.12345'
           and '500' in page.model.index(0, 3).data()
           and page.model.index(0, 4).data() == '2026-12-31')
-    check('面包屑含類別', '認購證' in page.crumb_lbl.text())
+    check('面包屑含類別', '認購證' in page.sl_crumb.text())
     page._back(); pump(app)
     check('返回 L3→L2', page._mode == 'w2')
     page._back(); pump(app)
@@ -233,11 +256,11 @@ def main():
 
     # w1 模糊過濾（market 仍 HK）
     page._type_btns['WARRANT'].click(); pump(app)
-    page.search_edit.setText('匯豐')
+    page.sl_search.setText('匯豐')
     wait_for(app, lambda: page.model.rowCount() == 1
              and page.model.index(0, 0).data() == 'HK.00005', what='w1 fuzzy')
     check('w1 模糊輸入：只返 match 嘅標的', True)
-    page.search_edit.clear()
+    page.sl_search.clear()
     wait_for(app, lambda: page.model.rowCount() == 2, what='w1 clear')
 
     # US 無 owner → 偽行直接落 w3
@@ -256,21 +279,21 @@ def main():
 
     # ── Part 5：flat 模糊輸入（types=None 全量 — 窩輪都 match 到）──
     print('── Part 5: fuzzy input (all types) ──')
-    page.search_edit.setText('腾讯')
+    page.sl_search.setText('腾讯')
     check('debounce 後 search(types=None) 且窩輪 match 到',
           wait_for(app, lambda: page.model.rowCount() == 3
                    and ('腾讯', None) in fdir.search_calls, what='fuzzy filter'))
-    page.search_edit.setText('nvda')
+    page.sl_search.setText('nvda')
     check('英文 code 模糊：NVDA hit',
           wait_for(app, lambda: page.model.rowCount() == 1
                    and page.model.index(0, 0).data() == 'US.NVDA', what='code fuzzy'))
-    page.search_edit.clear()
+    page.sl_search.clear()
     wait_for(app, lambda: page.model.rowCount() == len(ENTRIES), what='clear query')
 
     # ── Part 6：底部計數 ──
     print('── Part 6: counts bar ──')
-    ct = page.counts_lbl.text()
-    st = page.status_lbl.text()
+    ct = page.sl_counts.text()
+    st = page.sl_status.text()
     check('計數含市場×種類數字（HK 股票 2 / HK 窩輪 3 / US 期貨 1 …）',
           '窩輪 3' in ct and '期貨 1' in ct and '股票 2' in ct)
     check(f'計數含總數（共 {len(ENTRIES)}）+ 顯示筆數 + 更新時間',
@@ -278,14 +301,14 @@ def main():
 
     # ── Part 7：一鍵更新 ──
     print('── Part 7: refresh all ──')
-    page.update_btn.click()
+    page.sl_update_btn.click()
     check('fake fetch 被 call（US+HK 全 plan）',
           wait_for(app, lambda: ('US', 'HK') in fdir.fetch_calls, what='fetch call'))
     check('更新完成 → 新 entry 入表格 + 計數更新',
           wait_for(app, lambda: page.model.rowCount() == len(ENTRIES) + 1
-                   and f'共 {len(ENTRIES) + 1}' in page.counts_lbl.text(), what='refreshed table'))
+                   and f'共 {len(ENTRIES) + 1}' in page.sl_counts.text(), what='refreshed table'))
     check('更新後按鈕 re-enabled + status ✅',
-          page.update_btn.isEnabled() and '✅' in page.status_lbl.text())
+          page.sl_update_btn.isEnabled() and '✅' in page.sl_status.text())
 
     # ── Part 8：期權二級下鑽（o1 候選 → o2 即時鏈）──
     print('── Part 8: option 2-level drill ──')
@@ -305,7 +328,7 @@ def main():
           and page.model.index(0, 2).data() == '認購'
           and '115' in page.model.index(0, 3).data()
           and page.model.index(0, 4).data() == '2026-10-07')
-    check('面包屑：期權 ▸ US.NVDA', 'US.NVDA' in page.crumb_lbl.text())
+    check('面包屑：期權 ▸ US.NVDA', 'US.NVDA' in page.sl_crumb.text())
     page._back(); pump(app)
     check('返回 o2→o1', page._mode == 'o1')
     n_calls = len(CHAIN_CALLS)
@@ -319,7 +342,7 @@ def main():
                                if page.model.index(r, 0).data() == 'US.QQQ'), 0)
     check('鏈失敗 → 如實 ❌ 且留喺 o1',
           wait_for(app, lambda: 'US.QQQ' in CHAIN_CALLS, what='qqq chain')
-          and wait_for(app, lambda: '❌' in page.status_lbl.text(), what='❌ status')
+          and wait_for(app, lambda: '❌' in page.sl_status.text(), what='❌ status')
           and page._mode == 'o1')
     page._back(); pump(app)
     check('返回 o1→flat', page._mode == 'flat' and page._type == 'ALL')

@@ -5,6 +5,7 @@ Run: python .scratch/e2e_gui_favorites.py   (from project root; QT_QPA_PLATFORM=
 
 Flow:
 1. shell 註冊：'favorites' in PAGE_KEYS + NAV_DIRECT（主菜單直按）
+1b. `.ui` 骨架（favorites_page.ui）：FILTER slot 按 MARKETS/TYPES 填按鈕、stamp → QSS 生效
 2. 空頁：fav_empty status + counts 0
 3. 新增：index 有 → snapshot market/type + canonical code（細階 input 還原）；
    index 冇但似 code → prefix 兜底 + UNKNOWN；重複 → ⚠️；唔似 code → ❌ 如實
@@ -34,6 +35,8 @@ import gateway.favorites as favorites  # noqa: E402
 import gateway.state_store as state_store  # noqa: E402
 from gateway.app import NAV_DIRECT, PAGE_KEYS  # noqa: E402
 from gateway.pages.favorites_page import FavoritesPage  # noqa: E402
+from gateway.pages.symbol_list_page import MARKETS, TYPES  # noqa: E402
+from gateway.theme import THEMES  # noqa: E402
 
 FAILURES = []
 
@@ -120,26 +123,43 @@ def main():
     page.show()
     pump(app)
 
+    # ── 1b. `.ui` 骨架（favorites_page.ui）──
+    print('── Part 1b: .ui 骨架 ──')
+    check('root 就係 FavoritesPage 本身（冇 wrapper）', page.objectName() == 'favorites_page')
+    check('.ui 骨架齊：輸入/按鈕/表/底部 + 兩個 FILTER slot',
+          all(getattr(page, n, None) is not None
+              for n in ('fav_add_edit', 'fav_add_btn', 'fav_remove_btn', 'fav_table',
+                        'fav_counts', 'fav_status', 'mktSlot', 'typeSlot')))
+    check('FILTER 按鈕按 MARKETS/TYPES 落喺對應 slot',
+          page.mktSlot.count() == len(MARKETS) and page.typeSlot.count() == len(TYPES))
+    check('filter 按鈕帶 og=filterbtn（生成 loop 直接 setProperty）',
+          all(b.property('og') == 'filterbtn'
+              for b in list(page._mkt_btns.values()) + list(page._type_btns.values())))
+    check('action 按鈕帶 og=favbtn + 顏色 = theme muted（stamp→QSS 一條線通）',
+          page.fav_add_btn.property('og') == 'favbtn'
+          and page.fav_add_btn.palette().color(page.fav_add_btn.foregroundRole()).name().upper()
+              == THEMES['dark']['muted'].upper())
+
     # ── 2. 空頁 ──
     print('── Part 2: 空頁 ──')
     check('空表 + fav_empty status',
-          page.model.rowCount() == 0 and '未有收藏' in page.status_lbl.text())
-    check('counts = 收藏 0', '收藏 0' in page.counts_lbl.text())
+          page.model.rowCount() == 0 and '未有收藏' in page.fav_status.text())
+    check('counts = 收藏 0', '收藏 0' in page.fav_counts.text())
 
     # ── 3. 新增 ──
     print('── Part 3: 新增 ──')
-    page.add_edit.setText('hk.00700')   # 細階 input → canonical 還原
-    page.add_btn.click()
+    page.fav_add_edit.setText('hk.00700')   # 細階 input → canonical 還原
+    page.fav_add_btn.click()
     pump(app)
     check('index 有 → snapshot STOCK/HK + canonical code',
           codes_of(page) == ['HK.00700']
           and cell(page, 0, 3) == '股票' and cell(page, 0, 2) == 'HK')
     check('name 跟語言解析（zh → 名）', cell(page, 0, 1) == '腾讯控股')
-    check('status ✅ fav_added', '已收藏' in page.status_lbl.text())
-    check('輸入框清空', page.add_edit.text() == '')
+    check('status ✅ fav_added', '已收藏' in page.fav_status.text())
+    check('輸入框清空', page.fav_add_edit.text() == '')
 
-    page.add_edit.setText('US.TEST99')   # index 冇但似 code → prefix 兜底
-    page.add_btn.click()
+    page.fav_add_edit.setText('US.TEST99')   # index 冇但似 code → prefix 兜底
+    page.fav_add_btn.click()
     pump(app)
     check('index 冇但似 code → US prefix + UNKNOWN',
           'US.TEST99' in codes_of(page))
@@ -147,17 +167,17 @@ def main():
     check('UNKNOWN 行 market=US + name 如實 —',
           cell(page, idx, 2) == 'US' and cell(page, idx, 1) == '—')
 
-    page.add_edit.setText('HK.00700')   # 重複
-    page.add_btn.click()
+    page.fav_add_edit.setText('HK.00700')   # 重複
+    page.fav_add_btn.click()
     pump(app)
     check('重複 → ⚠️ fav_dup 唔會加多一筆',
-          codes_of(page).count('HK.00700') == 1 and '已經收藏過' in page.status_lbl.text())
+          codes_of(page).count('HK.00700') == 1 and '已經收藏過' in page.fav_status.text())
 
-    page.add_edit.setText('唔係code')   # 唔似 code 又搵唔到
-    page.add_btn.click()
+    page.fav_add_edit.setText('唔係code')   # 唔似 code 又搵唔到
+    page.fav_add_btn.click()
     pump(app)
     check('唔似 code → ❌ 如實，唔入表',
-          '❌' in page.status_lbl.text() and page.model.rowCount() == 2)
+          '❌' in page.fav_status.text() and page.model.rowCount() == 2)
 
     # ── 4. 模糊輸入（gateway/symbol_input：code 前綴 + 中文名都得，揀咗淨返 CODE 入欄）──
     print('── Part 4: 模糊輸入候選 ──')
@@ -165,20 +185,20 @@ def main():
     def cands():
         return page.completer.model().stringList()
 
-    page.add_edit.setText('NV')
+    page.fav_add_edit.setText('NV')
     wait_for(app, lambda: any(s.startswith('US.NVDA') for s in cands()), 'completer candidates')
     check('code 模糊（NV → US.NVDA）', any(s.startswith('US.NVDA') for s in cands()))
 
-    page.add_edit.setText('腾讯')   # 🤖 用戶投訴位：打中文名必須有候選（舊版 model 淨返 code → 永遠空）
+    page.fav_add_edit.setText('腾讯')   # 🤖 用戶投訴位：打中文名必須有候選（舊版 model 淨返 code → 永遠空）
     wait_for(app, lambda: any(s.startswith('HK.00700') for s in cands()), 'name candidates')
     check('中文名模糊（腾讯 → HK.00700，item 連名稱）',
           any(len(s.split()) == 2 and s.startswith('HK.00700') for s in cands()))
 
     page.completer.activated.emit('HK.00700  騰訊控股')   # 模擬喺 dropdown 揀咗
     pump(app)
-    check('揀咗候選 → 欄入面淨返乾淨 CODE', page.add_edit.text() == 'HK.00700')
+    check('揀咗候選 → 欄入面淨返乾淨 CODE', page.fav_add_edit.text() == 'HK.00700')
 
-    page.add_edit.setText('HK.00700')   # 已經係準確 code → 唔再彈候選阻眼
+    page.fav_add_edit.setText('HK.00700')   # 已經係準確 code → 唔再彈候選阻眼
     wait_for(app, lambda: cands() == [], 'candidates cleared for exact code')
     check('準確 code → 清空候選（pass-through）', cands() == [])
 
@@ -202,15 +222,15 @@ def main():
 
     # ── 6. 刪除所選 ──
     print('── Part 6: 刪除 ──')
-    page.table.selectRow(0)
-    page.remove_btn.click()
+    page.fav_table.selectRow(0)
+    page.fav_remove_btn.click()
     pump(app)
     check('刪除所選 → 剩低 1 筆 + 🗑 status',
-          codes_of(page) == ['US.TEST99'] and '已刪除' in page.status_lbl.text())
-    page.remove_btn.click()
+          codes_of(page) == ['US.TEST99'] and '已刪除' in page.fav_status.text())
+    page.fav_remove_btn.click()
     pump(app)
-    check('冇選中 → ⚠️ fav_no_sel', '没有选中' in page.status_lbl.text()
-          or '冇選中' in page.status_lbl.text())
+    check('冇選中 → ⚠️ fav_no_sel', '没有选中' in page.fav_status.text()
+          or '冇選中' in page.fav_status.text())
 
     # ── 7. 本地記憶 + JSON 結構 ──
     print('── Part 7: 記憶 / JSON ──')
@@ -226,10 +246,10 @@ def main():
           and set(fav['items'][0]) >= {'code', 'market', 'type', 'added'})
 
     # 加返兩筆再驗 filter 記憶
-    page2.add_edit.setText('HK.HSI')
-    page2.add_btn.click()
-    page2.add_edit.setText('US.QQQ')
-    page2.add_btn.click()
+    page2.fav_add_edit.setText('HK.HSI')
+    page2.fav_add_btn.click()
+    page2.fav_add_edit.setText('US.QQQ')
+    page2.fav_add_btn.click()
     pump(app)
     page2._mkt_btns['US'].click()
     page2._type_btns['ETF'].click()
@@ -245,21 +265,21 @@ def main():
     page3.retranslate('en')
     pump(app)
     check('EN：按鈕/欄頭跟語言（filter 狀態不變）',
-          page3.add_btn.text() == '+ Add favorite'
+          page3.fav_add_btn.text() == '+ Add favorite'
           and page3.model.headerData(4, Qt.Horizontal) == 'Added'
           and codes_of(page3) == ['US.QQQ'])
     check('EN type label', page3._type_label('ETF') == 'ETFs' and page3._type_label('STOCK') == 'Stocks')
     page3.retranslate('zh_cn')
     pump(app)
     check('zh_cn：简体按鈕 + 股票 label',
-          page3.add_btn.text() == '＋ 新增收藏' and page3._type_label('STOCK') == '股票')
+          page3.fav_add_btn.text() == '＋ 新增收藏' and page3._type_label('STOCK') == '股票')
 
     # ── 9. canonical 大細階（🤖 live 抓出：store 唔准 upper — 期貨主連 HK.HSImain 要保留）──
     print('── Part 9: canonical 大細階 ──')
     page3._mkt_btns['ALL'].click()
     page3._type_btns['ALL'].click()
-    page3.add_edit.setText('hk.hsimain')   # 細階 input → index canonical 還原
-    page3.add_btn.click()
+    page3.fav_add_edit.setText('hk.hsimain')   # 細階 input → index canonical 還原
+    page3.fav_add_btn.click()
     pump(app)
     check('HK.HSImain canonical 保留（唔變 HSIMAIN）+ FUTURE snapshot',
           any(e['code'] == 'HK.HSImain' and e['type'] == 'FUTURE'

@@ -6,6 +6,9 @@ Run: python .scratch/e2e_gui_quotes.py   (from project root; QT_QPA_PLATFORM=off
 
 Flow:
 1. shell 註冊：PAGE_KEYS[0] == 'home'（首頁最前）、quotes 第二位
+1b. `.ui` 骨架（quotes_page.ui + chart_cell.ui）：Designer margin/spacing 照載入、頂欄控件齊、
+    layout/週期掣按 LAYOUTS/KTYPES 填進 layoutSlot/periodSlot、promote 嘅 IndicatorKlineChart
+    起返真 class、og/WA_StyledBackground 由 _STAMP 補返、QSS 兩層都有根
 2. 構造：6 cells / 默認 1x1（cell0 可見、其餘 hide）/ 11 週期按鈕齊全
 3. 串流：默認 HK.00700 → baseline df → chart._rows + 價 label；tick → 價即時更新 +
    throttle 後 chart 更新；stale token tick 作廢
@@ -32,12 +35,14 @@ from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QMargins, Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QToolButton  # noqa: E402
 import pandas as pd  # noqa: E402
 
+import gateway.indicators as indicators  # noqa: E402
 import gateway.state_store as state_store  # noqa: E402
 from gateway.app import PAGE_KEYS  # noqa: E402
-from gateway.pages.quotes_page import QuotesPage, KTYPES, N_CELLS  # noqa: E402
+from gateway.pages.quotes_page import QuotesPage, KTYPES, LAYOUTS, N_CELLS  # noqa: E402
 
 FAILURES = []
 
@@ -150,12 +155,42 @@ def main():
     fdir = FakeSearchDir()
     page._directory = fdir
     for c in page.cells:
-        c.symbol_edit.completer()._dir = fdir
+        c.cell_symbol.completer()._dir = fdir
     page.show()   # offscreen 都要 show — 否則 isVisible() 永遠 False
     app.processEvents()
     check('page objectName = quotes_page', page.objectName() == 'quotes_page')
     check(f'{N_CELLS} cells constructed', len(page.cells) == N_CELLS)
     check('worker thread ready', wait_for(app, lambda: page._worker is not None, what='worker_ready'))
+
+    # ── Part 1b：`.ui` 骨架（排版喺 gateway/ui/quotes_page.ui + chart_cell.ui；數量屬資料 → 填進 slot）──
+    lay = page.layout()
+    check('`.ui` root objectName + Designer margin/spacing 照載入',
+          page.objectName() == 'quotes_page' and lay is not None
+          and lay.contentsMargins() == QMargins(10, 8, 10, 10) and lay.spacing() == 6)
+    check('頂欄靜態控件全部由 `.ui` 建出（objectName 即身份契約）',
+          all(getattr(page, n, None) is not None for n in
+              ('ind_toggle', 'ind_menu_btn', 'strat_label', 'strat_combo', 'layoutSlot', 'gridSlot'))
+          and page.ind_toggle.isCheckable()
+          and page.ind_menu_btn.popupMode() == QToolButton.ToolButtonPopupMode.InstantPopup)
+    check('layout 按鈕按 LAYOUTS 生成並填進 layoutSlot（加 layout 唔使改 `.ui`）',
+          page.layoutSlot.count() == len(LAYOUTS) and page.gridSlot.spacing() == 6
+          and all(page.findChild(QPushButton, f'layout_{n}') is not None for n in LAYOUTS))
+    c0 = page.cells[0]
+    check('每格排版由 chart_cell.ui 建出（Designer margin/spacing 照載入）',
+          c0.objectName() == 'quotes_cell' and c0.layout().contentsMargins() == QMargins(8, 6, 8, 6)
+          and c0.layout().spacing() == 4
+          and all(getattr(c0, n, None) is not None for n in ('cell_symbol', 'cell_price', 'periodSlot')))
+    check('promote 嘅自繪 widget 起返真 class（QUiLoader factory）',
+          isinstance(c0.chart, indicators.IndicatorKlineChart) and c0.chart.parent() is c0)
+    check('週期掣按 KTYPES 生成並填進 periodSlot（加週期唔使改 `.ui`）',
+          all(c.periodSlot.count() == len(KTYPES) for c in page.cells))
+    check('og / WA_StyledBackground 由 _STAMP 補返（Designer 帶唔住 dynamic property）',
+          page.ind_toggle.property('og') == 'indtoggle'
+          and page.ind_menu_btn.property('og') == 'indmenu'
+          and page._layout_btns['2x2'].property('og') == 'layoutbtn'
+          and page.testAttribute(Qt.WA_StyledBackground) and c0.testAttribute(Qt.WA_StyledBackground))
+    check('頁面 QSS 有根（objectName → QSS cascade，頁 + 格兩層都有）',
+          'QWidget#quotes_page' in page.styleSheet() and 'QWidget#quotes_cell' in page.styleSheet())
 
     # ── Part 2：默認 1x1 + 全週期按鈕 ──
     print('── Part 2: default layout + period buttons ──')
@@ -175,16 +210,16 @@ def main():
     check('baseline → chart._rows 上圖',
           wait_for(app, lambda: len(cell0.chart._rows) == 3, what='baseline bars'))
     check('baseline → 價 label = 102.00',
-          wait_for(app, lambda: cell0.price_lbl.text() == '102.00', what='baseline price'))
+          wait_for(app, lambda: cell0.cell_price.text() == '102.00', what='baseline price'))
     check('live tick → 價即時更新 105.00',
-          wait_for(app, lambda: cell0.price_lbl.text() == '105.00', what='tick price'))
+          wait_for(app, lambda: cell0.cell_price.text() == '105.00', what='tick price'))
     check('throttle redraw → chart 4 bars',
           wait_for(app, lambda: len(cell0.chart._rows) == 4, what='throttled redraw'))
     # stale token（舊 run 遲到 tick）→ 作廢，價唔改
-    old_price = cell0.price_lbl.text()
+    old_price = cell0.cell_price.text()
     page._on_cell_update(0, 999999, {'phase': 'tick', 'df': _df([1.0, 2.0, 999.0])})
     app.processEvents()
-    check('stale token tick 被作廢（價唔改）', cell0.price_lbl.text() == old_price)
+    check('stale token tick 被作廢（價唔改）', cell0.cell_price.text() == old_price)
 
     # ── Part 4：換週期（exclusive 按鈕組 → 重新 stream）──
     print('── Part 4: period switch (exclusive buttons) ──')
@@ -197,26 +232,26 @@ def main():
 
     # ── Part 5：換標的（canonical 大細階）+ 模糊輸入 + 無效代碼 ──
     print('── Part 5: symbol change + fuzzy + invalid ──')
-    cell0.symbol_edit.setText('hk.hsimain')
-    cell0.symbol_edit.returnPressed.emit()
+    cell0.cell_symbol.setText('hk.hsimain')
+    cell0.cell_symbol.returnPressed.emit()
     # 🤖 模糊輸入經 gateway/symbol_input（debounce 200ms → 本地 index）→ 等 debounce 先讀 model
     def cands():
-        return cell0.symbol_edit.completer().model().stringList()
+        return cell0.cell_symbol.completer().model().stringList()
 
-    cell0.symbol_edit.setText('腾讯')
+    cell0.cell_symbol.setText('腾讯')
     wait_for(app, lambda: any('HK.00700' in s for s in cands()), 'fuzzy candidates')
     check('模糊輸入 → completer model 連名（「腾讯」hit 騰訊控股）',
           any('HK.00700' in s and '騰訊控股' in s for s in cands()))
-    cell0.symbol_edit.setText('hk.hsimain')
-    cell0.symbol_edit.returnPressed.emit()
+    cell0.cell_symbol.setText('hk.hsimain')
+    cell0.cell_symbol.returnPressed.emit()
     check('HK.HSImain canonical 大細階（唔變 HSIMAIN）',
           wait_for(app, lambda: ('HK.HSImain', 'K_5M') in fake.calls, what='canonical stream'))
-    cell0.symbol_edit.setText('HELLO')
-    cell0.symbol_edit.returnPressed.emit()
+    cell0.cell_symbol.setText('HELLO')
+    cell0.cell_symbol.returnPressed.emit()
     app.processEvents()
-    check('無效代碼 → ❌ label（唔開 stream）', '❌' in cell0.price_lbl.text())
-    cell0.symbol_edit.setText('hk.hsimain')   # 還原 — 之後 Part 6/7 用呢個 state
-    cell0.symbol_edit.returnPressed.emit()
+    check('無效代碼 → ❌ label（唔開 stream）', '❌' in cell0.cell_price.text())
+    cell0.cell_symbol.setText('hk.hsimain')   # 還原 — 之後 Part 6/7 用呢個 state
+    cell0.cell_symbol.returnPressed.emit()
 
     # ── Part 6：layout 切換（cells 實例永不銷毀）──
     print('── Part 6: layout switch ──')
@@ -229,8 +264,8 @@ def main():
     check('cells 實例不變（切換只 hide/show + reposition）',
           [id(c) for c in page.cells] == ids_before)
     cell1 = page.cells[1]
-    cell1.symbol_edit.setText('US.NVDA')
-    cell1.symbol_edit.returnPressed.emit()
+    cell1.cell_symbol.setText('US.NVDA')
+    cell1.cell_symbol.returnPressed.emit()
     check('可見格設標的 → 新 stream（US.NVDA K_1M）',
           wait_for(app, lambda: ('US.NVDA', 'K_1M') in fake.calls, what='cell1 stream'))
     check('cell1 baseline 上圖',
@@ -382,7 +417,7 @@ def main():
     page2 = QuotesPage(client_factory=lambda: fake2)
     page2._directory = fdir   # hermetic：canonical 都經 fake index
     for c in page2.cells:
-        c.symbol_edit.completer()._dir = fdir
+        c.cell_symbol.completer()._dir = fdir
     check('新 page 實例 load 返記憶（layout 2×2 + cell0 HK.HSImain K_5M + cell1 US.NVDA）',
           page2._layout == '2x2'
           and page2.cells[0].state() == {'symbol': 'hk.hsimain', 'period': 'K_5M'}
@@ -403,7 +438,7 @@ def main():
         page.retranslate(lang)
         app.processEvents()
     check('retranslate 三語冇 KeyError（t() fail-fast）', True)
-    check('retranslate en → placeholder 跟語言', 'Symbol:' in page.cells[0].symbol_edit.placeholderText())
+    check('retranslate en → placeholder 跟語言', 'Symbol:' in page.cells[0].cell_symbol.placeholderText())
     page._on_app_quit()
     check('清理 → request_shutdown + fake __aexit__', wait_for(app, lambda: fake.exited == 1, what='fake exit'))
 

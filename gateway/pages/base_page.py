@@ -7,75 +7,48 @@
 
 Standalone window 有最小 toolbar（標題 + 語言切換 + theme toggle），
 同主外殼（gateway/app.py）共用同一套 i18n / theme 模組，行為一致。
+排版喺 `gateway/ui/standalone_window.ui`（同 `app_shell.ui` 同一個 QSS scope）；本檔只剩行為：
+語言 item（= `LANGS`）、theme toggle、page 本體填進 `pageSlot`。
 """
 import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
-                               QMainWindow, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QApplication, QMainWindow
 
 from gateway.i18n import DEFAULT_LANG, LANGS, LANG_LABELS, t, theme_toggle_text
 from gateway.theme import apply_theme
+from gateway.ui.bind import apply_text, stamp
+from gateway.ui.loader import apply_ui
+
+# 頂欄固定文案（`.ui` 內嗰句只係俾 Designer 睇）；標題 = 構造參數 title_key、theme 掣 = 狀態 → 留 code
+_TEXT = {'standalone_langlbl': 'language_label'}
+_STAMP = {'oneGateRoot': {'og': 'shell'}, 'standalone_bar': {'og': 'navbar'}}
 
 
 class StandaloneWindow(QMainWindow):
-    """最小外殼：頂欄（標題 + 語言 + theme）+ page 本體。"""
+    """最小外殼：頂欄（標題 + 語言 + theme）+ page 本體。控件全部由 `.ui` 建出。"""
 
     def __init__(self, page_cls, title_key):
         super().__init__()
-        self.setObjectName('standalone_window')
+        apply_ui(self, 'standalone_window')   # root objectName = standalone_window，central = oneGateRoot
+        stamp(self, _STAMP)                   # og / WA_StyledBackground：Designer 帶唔住 dynamic property
         self._lang = DEFAULT_LANG
         self._theme_name = 'dark'
         self._title_key = title_key
 
-        root = QWidget()
-        root.setObjectName('oneGateRoot')
-        root.setProperty('og', 'shell')
-        root.setAttribute(Qt.WA_StyledBackground, True)
-        v = QVBoxLayout(root)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
-
-        # ── 頂欄（同主外殼 navBar 同一 QSS scope）──
-        bar = QWidget()
-        bar.setObjectName('standalone_bar')
-        bar.setProperty('og', 'navbar')
-        bar.setAttribute(Qt.WA_StyledBackground, True)
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(16, 8, 16, 8)
-
-        self.title_lbl = QLabel()
-        self.title_lbl.setObjectName('standalone_title')
-        h.addWidget(self.title_lbl)
-        h.addStretch(1)
-
-        self.lang_lbl = QLabel()
-        h.addWidget(self.lang_lbl)
-        self.lang_combo = QComboBox()
-        self.lang_combo.setObjectName('standalone_lang')
+        # 語言 item 屬資料（加語言唔使改 `.ui`）
         for code in LANGS:
-            self.lang_combo.addItem(LANG_LABELS[code], userData=code)
-        h.addWidget(self.lang_combo)
+            self.standalone_lang.addItem(LANG_LABELS[code], userData=code)
+        self.standalone_theme.setCheckable(True)   # checked = light，unchecked = dark（預設）
 
-        self.theme_btn = QPushButton()
-        self.theme_btn.setObjectName('standalone_theme')
-        self.theme_btn.setCheckable(True)  # checked = light，unchecked = dark（預設）
-        h.addWidget(self.theme_btn)
+        self.page = page_cls()               # page 本體 = 構造參數 → 填進 `.ui` 預留嘅空 slot
+        self.pageSlot.addWidget(self.page, 1)
 
-        v.addWidget(bar)
-
-        # ── page 本體 ──
-        self.page = page_cls()
-        v.addWidget(self.page, 1)
-
-        self.setCentralWidget(root)
-
-        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
-        self.theme_btn.toggled.connect(self._on_theme_toggled)
+        self.standalone_lang.currentIndexChanged.connect(self._on_lang_changed)
+        self.standalone_theme.toggled.connect(self._on_theme_toggled)
         self._retranslate()
 
     def _on_lang_changed(self, idx):
-        code = self.lang_combo.itemData(idx)
+        code = self.standalone_lang.itemData(idx)
         if code and code != self._lang:
             self._lang = code
             self._retranslate()
@@ -85,15 +58,15 @@ class StandaloneWindow(QMainWindow):
         if name != self._theme_name:
             self._theme_name = name
             apply_theme(name)
-            self.theme_btn.setText(theme_toggle_text(name, self._lang))
+            self.standalone_theme.setText(theme_toggle_text(name, self._lang))
 
     def _retranslate(self):
         lang = self._lang
         title = t(self._title_key, lang)
         self.setWindowTitle(title)
-        self.title_lbl.setText(title)
-        self.lang_lbl.setText(t('language_label', lang))
-        self.theme_btn.setText(theme_toggle_text(self._theme_name, lang))
+        apply_text(self, _TEXT, lang)
+        self.standalone_title.setText(title)   # 標題文字跟構造參數 title_key → 屬資料，唔入表
+        self.standalone_theme.setText(theme_toggle_text(self._theme_name, lang))
         self.page.retranslate(lang)
 
 

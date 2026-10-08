@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-10-09
+
+### MINOR：UI 分離 — 全部排版入 `gateway/ui/*.ui`（QUiLoader 執行期載入、冇 codegen）
+檔案：`gateway/ui/loader.py`、`gateway/ui/bind.py`、`gateway/ui/*.ui`（11 頁 + `app_shell` + `standalone_window` + `popup_page` + 子模板 `chart_cell` / `strategy_rule_row`）、`gateway/app.py`、`gateway/pages/base_page.py`、`gateway/pages/`（11 頁全部改寫；`gui_kline.py` / `gui_fulltest.py` **零改動**）、`.scratch/t_ui_infra.py`、`.scratch/e2e_gui_shell.py`、`.scratch/e2e_gui_connection.py`、其餘各頁 E2E
+- **要求**（用戶，長期規則）：所有 UI 一律入 `.ui`，Qt Designer 可直接調 margin / 間距 / 欄位比例；執行期載入，唔准 codegen（uic 產生 py）。
+- **基礎設施**：`loader.apply_ui(page, name)` 將 `.ui` 砌喺**現有實例**之上（root = 第一個 `parent is None` 嘅 createWidget，**唔靠 class name** — Designer 對 QMainWindow form 會寫 `<widget class="QMainWindow">`）；`load_ui(name, root_cls)` 起新實例 = 重複子模板；`register_custom()` 俾 promote 嘅自繪 widget 返真 class；`.ui` 經 QBuffer 讀（跨平台）。`bind.stamp(root, registry)` 按 objectName 注入 QSS dynamic property（Designer 會 drop 自訂 property）；`bind.apply_text(root, table, lang)` = table-driven retranslate。
+- **契約**：objectName == Python attribute name（QUiLoader 將子 widget 掛做 root attribute，`self.navSlot` / `row.rule_lbl` 直接可用）== QSS `#objectName` == E2E 鉤子 → 舊 objectName 一個冇改。**數量屬資料、排版屬 UI**：`.ui` 留空 layout slot（`navSlot`/`menuSlot`/`langSlot`/`paramSlot`/`rulesSlot`/`gridSlot`/`detailNoteSlot`/`periodSlot`…），由 registry（`PAGE_KEYS`/`NAV_MENUS`/`LANGS`/`LAYOUTS`/`KTYPES`/`INDICATOR_DEFS`/`CONDITION_DEFS`）喺運行期填 → 加頁 / 加參數唔使改 `.ui`。signal 接駁一律留喺 code（`.ui` 嘅 `<connections>` 空）。
+- **命令式建檔清零**：全 repo 掃描 `QVBoxLayout(`/`QHBoxLayout(`/`QGridLayout(`/`setContentsMargins(`/`.setSpacing(` → 得返 `gui_kline.py` / `gui_fulltest.py`（零改動契約，靠 `takeCentralWidget()` 嵌入）。retranslate 全部轉 `_TEXT` 表；剩低嘅 `setText(t(...))` 全部屬**資料或狀態**（registry 生成嘅 nav/menu/QAction、status/result/crumb、逐格 placeholder、`_PH` 循環）。
+- 🐞 **`.ui` 靜默陷阱 ×3**（futu_trade 等價實證逼出）：① QGridLayout 間距屬性名必須 `horizontalSpacing`/`verticalSpacing`（寫 `hspacing`/`vspacing` uic 直接丟掉 → 實測變 6、欄位差 12px）；② card `vsizetype="Fixed"` 會令 `QWidgetItem` 將 item 最小高度抬到 sizeHint（成頁 minimumSizeHint +28px，細窗縮唔落）；③ `.ui` 冇 `<item stretch>` 可用 → root 級「剩餘高度歸某區」必須包 wrapper（`cols_wrap` verstretch 1）；sizePolicy 嘅 horstretch/verstretch 就真係生效（`layout.stretch(i)` 報 0 只係 reporting，geometry 實證先準）。
+- 🐞 **`WA_StyledBackground` 只對 `type(w) is QWidget` 生效** → 純 QWidget subclass 嘅 page root 一直食唔到頁面級 QSS；`stamp` 改用 `type(w).paintEvent is QWidget.paintEvent` 判斷後全部補返。
+- 🔎 **兩個新發現**：`apply_text` 原本只 call `setText` → QGroupBox 冇呢個方法，組標題入唔到表，故加 `isinstance(w, QGroupBox) → setTitle` 分支；QUiLoader 對 QMainWindow form 即使 root 係注入嘅實例，都照樣接好 central widget（`StandaloneWindow` / `_PopupPageWindow` 因此唔使再自己 `setCentralWidget` / `resize`，root `geometry` 由 `.ui` 管）。
+- 🧩 **重複子模板**：`chart_cell.ui`（行情頁單格，首次喺真頁用 `<customwidget>` + `register_custom`）與 `strategy_rule_row.ui`（策略每條條件一行）。⚠️ 逐條要獨有 objectName（俾 E2E / 刪除用）→ `stamp` 必須排喺改名**之前**（stamp 按模板 objectName 解析）。
+- **驗證**：`t_ft_geom.py` 等價實證 — `git show HEAD:` 起舊版 futu_trade 頁，1280×860 / 1024×700 / 1920×900 三尺寸逐 45 個 widget 比對絕對 geometry → 全部一致（已滾動清理）。`e2e_gui_shell`（56+7 項，含 standalone 外殼）、`e2e_gui_connection`（33 項）、home / favorites / fulltest / indicators / strategies / symbol_list / quotes / futu_trade（起**真** `OneGateWindow()` + live OpenD）全部全綠 ✅。
+
 ## 2026-10-08
 
 ### MINOR：策略 slim model（刪標的/生效期）+ BUFFER 內訊號改純文字（B紅字/S綠字冇底色）

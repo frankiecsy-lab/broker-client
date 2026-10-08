@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ChartCell</class>
+ <widget class="QWidget" name="quotes_cell">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>560</width>
+    <height>340</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="cellLayout">
+   <property name="leftMargin"><number>8</number></property>
+   <property name="topMargin"><number>6</number></property>
+   <property name="rightMargin"><number>8</number></property>
+   <property name="bottomMargin"><number>6</number></property>
+   <property name="spacing"><number>4</number></property>
+   <!-- 標的欄：模糊輸入一律經 gateway/symbol_input（候選/連名屬資料）；最新價 label 喺右 -->
+   <item>
+    <layout class="QHBoxLayout" name="symbolRow">
+     <property name="leftMargin"><number>0</number></property>
+     <property name="topMargin"><number>0</number></property>
+     <property name="rightMargin"><number>0</number></property>
+     <property name="bottomMargin"><number>0</number></property>
+     <property name="spacing"><number>4</number></property>
+     <item>
+      <widget class="QLineEdit" name="cell_symbol">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <!-- 文字屬裝飾：placeholder 嘅來源係 i18n（ChartCell 逐格 setPlaceholderText） -->
+       <property name="placeholderText"><string>標的：</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="cell_price">
+       <property name="text"><string>—</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 週期掣：數量 = KTYPES（futu KLType 全集）屬資料 → ChartCell._build_period_btns 逐個填進
+        periodSlot（objectName period_btn，樣式靠 QSS #period_btn）；加週期唔使改呢檔。 -->
+   <item>
+    <layout class="QHBoxLayout" name="periodSlot">
+     <property name="leftMargin"><number>0</number></property>
+     <property name="topMargin"><number>0</number></property>
+     <property name="rightMargin"><number>0</number></property>
+     <property name="bottomMargin"><number>0</number></property>
+     <property name="spacing"><number>2</number></property>
+    </layout>
+   </item>
+   <item>
+    <widget class="IndicatorKlineChart" name="chart">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>IndicatorKlineChart</class>
+   <extends>QWidget</extends>
+   <header>gateway.indicators</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

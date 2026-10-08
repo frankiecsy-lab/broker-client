@@ -17,6 +17,10 @@
   sub-menu 逐條線（params `show1..4`，0 → 唔畫、唔入 Y-fit）。總開關保留 = 頁面級 all-off。
 - **本地記憶**：所有格嘅標的/週期 + layout + 指標開關/策略 id → `gateway/state_store.py` 統一 JSON（邊改邊 save，啟動 load）。
   標的經 symbol index canonical 大細階還原（HK.HSImain 細階 main — 同交易頁同一把尺）。
+- **排版**：`gateway/ui/quotes_page.ui`（頂欄 + 空 `layoutSlot` / `gridSlot`）同 `gateway/ui/chart_cell.ui`
+  （單格：標的欄 + 空 `periodSlot` + **promote** 咗嘅 `IndicatorKlineChart`，由 `loader.register_custom` 起返真 class）。
+  🤖 控件**數量**一律屬資料 → layout 按鈕 = `LAYOUTS`、週期掣 = `KTYPES`、格數 = `N_CELLS`、
+  策略 item = StrategyManager：全部由 code 填進 slot，加 layout／週期／格數唔使改 `.ui`。
 - **Theme**：照 kline_page recipe（reassign gk.C_* + chart._redraw()）；頁面級 QSS template。
 
 單獨運行：`python gateway/pages/quotes_page.py`。
@@ -34,9 +38,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject  # noqa: E402
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QApplication, QButtonGroup, QMenu, QPushButton, QWidget  # noqa: E402
 
 from gateway.pages import gui_kline as gk  # noqa: E402 — 同目錄 app 組件：重用 KlineChart / _fmt_big
 import gateway.indicators as indicators  # noqa: E402 — #27：IndicatorKlineChart（指標 + B/S 標記）
@@ -44,6 +46,10 @@ import gateway.theme as theme_mod  # noqa: E402
 from gateway import state_store  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 from gateway.symbol_input import attach_symbol_input, make_search  # noqa: E402 — 全域模糊輸入
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui, register_custom  # noqa: E402
+
+register_custom(indicators.IndicatorKlineChart)   # chart_cell.ui promote 呢個自繪 widget（見 loader._CUSTOM）
 
 # ── 常量 ──
 KTYPES = ('K_1M', 'K_3M', 'K_5M', 'K_15M', 'K_30M', 'K_60M',
@@ -54,6 +60,13 @@ N_CELLS = 6
 TICK_UI_INTERVAL = 0.25   # chart redraw throttle（同 fulltest TICK_UI_INTERVAL）
 _CODE_RE = re.compile(r'^(?:HK|US|SH|SZ)\.[A-Z0-9][A-Z0-9.]*$', re.IGNORECASE)
 DEFAULT_CELLS = [{'symbol': 'HK.00700', 'period': 'K_1M'}] + [{'symbol': '', 'period': 'K_1M'}] * 5
+
+# `.ui` 內嘅靜態 widget：QSS property（Designer 帶唔住 dynamic property）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {'quotes_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
+          'ind_toggle': {'og': 'indtoggle'}, 'ind_menu_btn': {'og': 'indmenu'}}
+_TEXT = {'ind_toggle': 'quotes_ind_show', 'ind_menu_btn': 'quotes_ind_menu',
+         'strat_label': 'quotes_strategy_label'}
+_STAMP_CELL = {'quotes_cell': {}}   # 每格 root 都係純 QWidget → 同上（QSS QWidget#quotes_cell）
 
 
 def _rows_from_df(df):
@@ -223,63 +236,53 @@ class _LoopThread(QThread):
 # ─────────────────────────── 單格 ChartCell ───────────────────────────
 
 class ChartCell(QWidget):
-    """一格：標的欄（模糊輸入）+ 11 週期按鈕 + 最新價 label + KlineChart。"""
+    """一格：標的欄（模糊輸入）+ 11 週期按鈕 + 最新價 label + KlineChart。
+
+    排版全部喺 `gateway/ui/chart_cell.ui`（`chart` 係 promote 咗嘅 `IndicatorKlineChart` —
+    未注入 manager/策略時行為同 gk.KlineChart）；本檔只剩行為：接輸入、餵數據、砌週期掣。
+    """
 
     def __init__(self, page, cell_id):
         super().__init__()
         self._page = page
         self._id = cell_id
         self._period = 'K_1M'
-        self.setObjectName('quotes_cell')
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        v = QVBoxLayout(self)
-        v.setContentsMargins(8, 6, 8, 6)
-        v.setSpacing(4)
-
-        top = QHBoxLayout()
-        self.symbol_edit = QLineEdit()
-        self.symbol_edit.setObjectName('cell_symbol')
-        self.symbol_edit.setPlaceholderText(t('quotes_symbol_ph', page._lang))
+        apply_ui(self, 'chart_cell')   # root objectName = quotes_cell（QSS QWidget#quotes_cell 靠呢個名）
+        stamp(self, _STAMP_CELL)       # WA_StyledBackground：Designer 帶唔住 dynamic property
+        # placeholder 嘅來源係 i18n（`.ui` 內嗰句只係俾 Designer 睇）；逐格 set → 唔入 _TEXT 表
+        self.cell_symbol.setPlaceholderText(t('quotes_symbol_ph', page._lang))
         # 🤖 模糊輸入一律經 gateway/symbol_input（本地 index + pass-through；揀咗淨返 CODE 即刻重取數）
-        self.completer = attach_symbol_input(self.symbol_edit, make_search(page._directory),
+        self.completer = attach_symbol_input(self.cell_symbol, make_search(page._directory),
                                              lang=page._lang, on_activate=lambda _c: self._submit_symbol())
-        self.symbol_edit.returnPressed.connect(self._submit_symbol)
-        self.symbol_edit.editingFinished.connect(self._submit_symbol)
-        top.addWidget(self.symbol_edit, 1)
-        self.price_lbl = QLabel('—')
-        self.price_lbl.setObjectName('cell_price')
-        top.addWidget(self.price_lbl)
-        v.addLayout(top)
+        self.cell_symbol.returnPressed.connect(self._submit_symbol)
+        self.cell_symbol.editingFinished.connect(self._submit_symbol)
+        self._build_period_btns()
 
-        per = QHBoxLayout()
-        per.setSpacing(2)
+    def _build_period_btns(self):
+        """週期掣 = futu KLType 全集（**數量屬資料**）→ 逐個填進 `.ui` 預留嘅空 periodSlot。"""
         self._period_btns = {}
         grp = QButtonGroup(self)
         grp.setExclusive(True)
         for kt in KTYPES:
             b = QPushButton(kt)
-            b.setObjectName('period_btn')
+            b.setObjectName('period_btn')   # 多格共用同一個名（QSS #period_btn），照舊
             b.setCheckable(True)
             b.setFixedHeight(20)
             b.setCursor(Qt.PointingHandCursor)
             grp.addButton(b)
             b.clicked.connect(lambda _c=False, k=kt: self._page._on_cell_period(self._id, k))
-            per.addWidget(b)
+            self.periodSlot.addWidget(b)
             self._period_btns[kt] = b
-        v.addLayout(per)
-
-        self.chart = indicators.IndicatorKlineChart(self)   # #27：未注入 manager/策略時行為同 gk.KlineChart
-        v.addWidget(self.chart, 1)
 
     # --- 狀態 ---
     def set_state(self, symbol, period):
-        self.symbol_edit.blockSignals(True)
-        self.symbol_edit.setText(symbol)
-        self.symbol_edit.blockSignals(False)
+        self.cell_symbol.blockSignals(True)
+        self.cell_symbol.setText(symbol)
+        self.cell_symbol.blockSignals(False)
         self._set_period_checked(period)
 
     def state(self):
-        return {'symbol': self.symbol_edit.text().strip(), 'period': self._period}
+        return {'symbol': self.cell_symbol.text().strip(), 'period': self._period}
 
     def _set_period_checked(self, period):
         if period not in KTYPES:
@@ -289,12 +292,12 @@ class ChartCell(QWidget):
 
     # --- 輸入 ---
     def _submit_symbol(self):   # 🤖 揀咗 completer 候選都會行呢度（attach on_activate）
-        self._page._on_cell_symbol(self._id, self.symbol_edit.text().strip())
+        self._page._on_cell_symbol(self._id, self.cell_symbol.text().strip())
 
     # --- 輸出 ---
     def show_error(self, msg):
-        self.price_lbl.setText(msg)
-        self.price_lbl.setStyleSheet(f'color: {gk.C_ACCENT}; font-weight: bold; background: transparent;')
+        self.cell_price.setText(msg)
+        self.cell_price.setStyleSheet(f'color: {gk.C_ACCENT}; font-weight: bold; background: transparent;')
 
     def show_rows(self, rows):
         if not rows:
@@ -303,23 +306,28 @@ class ChartCell(QWidget):
         last = rows[-1][4]
         prev = rows[-2][4] if len(rows) > 1 else last
         color = gk.C_UP if last > prev else (gk.C_DOWN if last < prev else gk.C_TEXT)
-        self.price_lbl.setText(gk._fmt_big(last))
-        self.price_lbl.setStyleSheet(f'color: {color}; font-weight: bold; background: transparent;')
+        self.cell_price.setText(gk._fmt_big(last))
+        self.cell_price.setStyleSheet(f'color: {color}; font-weight: bold; background: transparent;')
 
     def clear_chart(self):
         self.chart.clear()
-        self.price_lbl.setText('—')
+        self.cell_price.setText('—')
 
 
 # ─────────────────────────── 頁 ───────────────────────────
 
 class QuotesPage(QWidget):
-    """行情頁 — grid + layout 按鈕 + 多路串流 + 本地記憶。"""
+    """行情頁 — grid + layout 按鈕 + 多路串流 + 本地記憶。
+
+    排版全部喺 `gateway/ui/quotes_page.ui`（頂欄控件 + 空 `layoutSlot` / `gridSlot`）；
+    本檔只剩行為：按 registry 砌控件填進 slot、接 signal、餵數據、排 grid。
+    """
 
     def __init__(self, client_factory=None):
         super().__init__()
         self._client_factory = client_factory   # e2e 注入 fake broker
-        self.setObjectName('quotes_page')       # QSS QWidget#quotes_page 靠呢個名
+        apply_ui(self, 'quotes_page')           # root objectName = quotes_page（QSS 靠呢個名做根）
+        stamp(self, _STAMP)                     # og / WA_StyledBackground：Designer 帶唔住
         self._lang = DEFAULT_LANG
         self._directory = None                  # symbol index lazy（首次用到先 load）
         self._worker = None
@@ -336,64 +344,20 @@ class QuotesPage(QWidget):
         if not isinstance(cells_st, list) or len(cells_st) != N_CELLS:
             cells_st = [dict(d) for d in DEFAULT_CELLS]
 
-        v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 10)
-        v.setSpacing(6)
-
-        # ── 頂欄：左 = #27 指標開關 + 策略下拉｜右 = 4 個 layout 按鈕（用戶要求）──
-        bar = QHBoxLayout()
-        self.ind_toggle = QPushButton(t('quotes_ind_show', self._lang))
-        self.ind_toggle.setProperty('og', 'indtoggle')
-        self.ind_toggle.setCheckable(True)
+        # ── 頂欄控件（指標開關 / 指標選項 menu / 策略下拉）已由 `.ui` 建出 → 呢度只還原狀態 ──
         self.ind_toggle.setChecked(self._ind_shown)
-        self.ind_toggle.clicked.connect(lambda _c=False: self._on_ind_toggle())
-        bar.addWidget(self.ind_toggle)
-        # #28：「指標選項」menu — 逐個指標 checkable（= manager enabled，同 K線頁/管理頁雙向同步）；
-        # MA 實例另有 sub-menu 逐條線 show1..4。總開關 ind_toggle 保留（頁面級 all-off，唔碰全局）。
-        self.ind_menu_btn = QToolButton()
-        self.ind_menu_btn.setObjectName('ind_menu_btn')
-        self.ind_menu_btn.setProperty('og', 'indmenu')
-        self.ind_menu_btn.setText(t('quotes_ind_menu', self._lang))
-        self.ind_menu_btn.setPopupMode(QToolButton.InstantPopup)
         self.ind_menu_btn.setEnabled(self._ind_shown)
-        self._ind_menu = QMenu(self.ind_menu_btn)
-        self._ind_menu.aboutToShow.connect(self._rebuild_ind_menu)   # 每次開都食最新 manager 狀態
-        self.ind_menu_btn.setMenu(self._ind_menu)
         self._ind_acts = {}          # iid → QAction（E2E hook）
         self._ma_show_acts = {}      # (iid, n) → QAction（E2E hook）
-        bar.addWidget(self.ind_menu_btn)
-        self._strat_lbl = QLabel(t('quotes_strategy_label', self._lang))
-        self._strat_lbl.setObjectName('strat_label')
-        bar.addWidget(self._strat_lbl)
-        self.strat_combo = QComboBox()
-        self.strat_combo.setObjectName('strat_combo')
-        self.strat_combo.currentIndexChanged.connect(self._on_strategy_choice)
-        bar.addWidget(self.strat_combo)
-        bar.addStretch(1)
-        self._layout_btns = {}
-        for name in LAYOUTS:
-            b = QPushButton(LAYOUT_LABELS[name])
-            b.setObjectName(f'layout_{name}')
-            b.setProperty('og', 'layoutbtn')
-            b.setCheckable(True)
-            b.clicked.connect(lambda _c=False, n=name: self._apply_layout(n))
-            bar.addWidget(b)
-            self._layout_btns[name] = b
-        v.addLayout(bar)
+        self._build_layout_btns()
 
         # ── grid ──
         # 模糊輸入喺 cell 構造時就食 directory → 一定要先 load index（同 P8 啟動同位置同成本；
         # get_directory() 只讀 cache，唔會自動開網絡）
         self._directory = self._get_directory()
-        self.grid = QGridLayout()
-        self.grid.setSpacing(6)
-        self.cells = []
-        for i in range(N_CELLS):
-            cell = ChartCell(self, i)
-            cs = cells_st[i] if isinstance(cells_st[i], dict) else {}
-            cell.set_state(str(cs.get('symbol', '')), str(cs.get('period', 'K_1M')))
-            self.cells.append(cell)
-        v.addLayout(self.grid, 1)
+        self._build_cells(cells_st)
+        self._connect_signals()
+        self._retranslate_widgets()   # `.ui` 內嘅文字屬裝飾 → 一律跟語言覆寫
 
         # ── #27：還原指標開關 / 策略（cells 起齊先至 apply 到每格 chart）──
         self._rebuild_strategy_combo()
@@ -418,6 +382,39 @@ class QuotesPage(QWidget):
             app.aboutToQuit.connect(self._on_app_quit)
         theme_mod.add_listener(self._on_theme_changed)
         self._apply_theme_qss(theme_mod.CURRENT)
+
+    # ── 按 registry 填 `.ui` 預留嘅空 slot（數量屬資料，排版屬 UI）──
+    def _build_layout_btns(self):
+        """layout 按鈕 = `LAYOUTS` → 逐個填進 layoutSlot；加 layout 唔使改 `.ui`。"""
+        self._layout_btns = {}
+        for name in LAYOUTS:
+            b = QPushButton(LAYOUT_LABELS[name])
+            b.setObjectName(f'layout_{name}')
+            b.setProperty('og', 'layoutbtn')   # QSS [og="layoutbtn"]（code 起嘅控件自己 set）
+            b.setCheckable(True)
+            b.clicked.connect(lambda _c=False, n=name: self._apply_layout(n))
+            self.layoutSlot.addWidget(b)
+            self._layout_btns[name] = b
+
+    def _build_cells(self, cells_st):
+        """格數 = `N_CELLS` → 逐格 ChartCell（排版見 chart_cell.ui）填進 gridSlot。
+        邊格可見、放邊個 row/col 屬行為 → 交落 `_apply_layout`；cells 永不銷毀（唔中斷 stream、唔丟狀態）。"""
+        self.cells = []
+        for i in range(N_CELLS):
+            cell = ChartCell(self, i)
+            cs = cells_st[i] if isinstance(cells_st[i], dict) else {}
+            cell.set_state(str(cs.get('symbol', '')), str(cs.get('period', 'K_1M')))
+            self.cells.append(cell)
+
+    def _connect_signals(self):
+        """signal 一律留喺 code（`.ui` 嘅 `<connections>` 留空）。"""
+        self.ind_toggle.clicked.connect(lambda _c=False: self._on_ind_toggle())
+        # #28：「指標選項」menu — 逐個指標 checkable（= manager enabled，同 K線頁/管理頁雙向同步）；
+        # MA 實例另有 sub-menu 逐條線 show1..4。總開關 ind_toggle 保留（頁面級 all-off，唔碰全局）。
+        self._ind_menu = QMenu(self.ind_menu_btn)
+        self._ind_menu.aboutToShow.connect(self._rebuild_ind_menu)   # 每次開都食最新 manager 狀態
+        self.ind_menu_btn.setMenu(self._ind_menu)
+        self.strat_combo.currentIndexChanged.connect(self._on_strategy_choice)
 
     # ── lazy symbol index（同 P8 / 交易頁共用 singleton）──
     def _get_directory(self):
@@ -475,14 +472,14 @@ class QuotesPage(QWidget):
         # （stretch 全 0 時 QGridLayout 按 sizeHint 分配，而 matplotlib canvas 的 sizeHint
         #  = figure 像素尺寸，各格 figure 歷史唔同 → row 高度異變；stretch 非 0 則純按 stretch）
         for r in range(max(rc[0] for rc in LAYOUTS.values())):
-            self.grid.setRowStretch(r, 1 if r < rows else 0)
+            self.gridSlot.setRowStretch(r, 1 if r < rows else 0)
         for c in range(max(rc[1] for rc in LAYOUTS.values())):
-            self.grid.setColumnStretch(c, 1 if c < cols else 0)
+            self.gridSlot.setColumnStretch(c, 1 if c < cols else 0)
         visible = set(range(rows * cols))
         for i, cell in enumerate(self.cells):
             if i in visible:
                 r, c = divmod(i, cols)
-                self.grid.addWidget(cell, r, c)   # 已喺 layout 內 → reposition
+                self.gridSlot.addWidget(cell, r, c)   # 已喺 layout 內 → reposition
                 cell.setVisible(True)
             else:
                 cell.setVisible(False)
@@ -658,15 +655,17 @@ class QuotesPage(QWidget):
         self._apply_theme_qss(name)
 
     # ── i18n ──
+    def _retranslate_widgets(self):
+        lang = self._lang
+        apply_text(self, _TEXT, lang)   # 指標開關 / 指標選項 / 策略 label（objectName → i18n key）
+        for cell in getattr(self, 'cells', []):
+            cell.cell_symbol.setPlaceholderText(t('quotes_symbol_ph', lang))   # 逐格 placeholder
+            cell.completer.lang = lang   # 🤖 display_for 直接食 GUI 語言碼（zh_cn 唔會再被轉做繁體）
+
     def retranslate(self, lang):
         self._lang = lang
-        self.ind_toggle.setText(t('quotes_ind_show', lang))
-        self.ind_menu_btn.setText(t('quotes_ind_menu', lang))   # #28
-        self._strat_lbl.setText(t('quotes_strategy_label', lang))
+        self._retranslate_widgets()
         self._rebuild_strategy_combo()   # 「無策略」item 跟語言
-        for cell in self.cells:
-            cell.symbol_edit.setPlaceholderText(t('quotes_symbol_ph', lang))
-            cell.completer.lang = lang   # 🤖 display_for 直接食 GUI 語言碼（zh_cn 唔會再被轉做繁體）
 
     # ── #27：每次入頁都 refresh 策略下拉（策略頁可能新增/刪除咗）──
     def showEvent(self, ev):

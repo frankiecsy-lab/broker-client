@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FulltestPage</class>
+ <widget class="QWidget" name="fulltest_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <!-- 呢頁本身冇排版：全部內容係 gui_fulltest.MainWindow 嘅 central widget（零改動嵌入）。
+       embedSlot 由 fulltest_page.py 填嗰一個 widget 入面 → 以後想加頂欄/狀態列，改呢度就得。 -->
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <property name="spacing"><number>0</number></property>
+   <item>
+    <layout class="QVBoxLayout" name="embedSlot"/>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -12,6 +12,8 @@
   完全唔似 code 又搵唔到 → ❌ 如實。重複 → ⚠️。
 - **刪除**：所選行 → 🗑 刪除所選（多選：Ctrl/Shift）。
 - **底部**：收藏總數 / 顯示筆數 + status（set status 必須喺 refresh 之後 — #10/#11 教訓）。
+- **排版**：`gateway/ui/favorites_page.ui`（Designer 可調）；FILTER 按鈕數量屬資料 → 由
+  `MARKETS`/`TYPES` 生成後填進 `.ui` 預留嘅 `mktSlot`/`typeSlot`。
 - **Theme/i18n**：照其他頁 recipe。
 
 單獨運行：`python gateway/pages/favorites_page.py`。
@@ -28,21 +30,26 @@ if _ROOT not in sys.path:
 
 from PySide6.QtCore import Qt, QAbstractTableModel  # noqa: E402
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup,  # noqa: E402
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPushButton, QTableView, QVBoxLayout, QWidget)
+                               QHeaderView, QPushButton, QWidget)
 
 import gateway.favorites as favorites  # noqa: E402
 import gateway.theme as theme_mod  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
-from gateway.symbol_input import attach_symbol_input  # noqa: E402 — 全域模糊輸入
-# 共用標的列表頁嘅 FILTER 常量（單一事實來源；唔另 define 一套）
 from gateway.pages.symbol_list_page import (MARKETS, MARKET_KEYS, TYPES,  # noqa: E402
-                                            TYPE_KEYS)
+                                            TYPE_KEYS)  # 共用 FILTER 常量（單一事實來源）
+from gateway.symbol_input import attach_symbol_input  # noqa: E402 — 全域模糊輸入
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 COLUMNS = ('code', 'name', 'market', 'type', 'added')
 HEAD_KEYS = {'code': 'sl_head_code', 'name': 'sl_head_name', 'market': 'sl_head_market',
              'type': 'sl_head_type', 'added': 'fav_head_added'}
 _CODE_LIKE = re.compile(r'^(HK|US)\.[A-Z0-9]+$', re.I)   # prefix 兜底准入格式
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {'fav_add_btn': {'og': 'favbtn'}, 'fav_remove_btn': {'og': 'favbtn'}}
+_TEXT = {'fav_add_btn': 'fav_add', 'fav_remove_btn': 'fav_remove'}
+_PH = {'fav_add_edit': 'fav_add_ph'}
 
 
 class _FavModel(QAbstractTableModel):
@@ -87,7 +94,8 @@ class _FavModel(QAbstractTableModel):
 class FavoritesPage(QWidget):
     def __init__(self, directory=None):
         super().__init__()
-        self.setObjectName('favorites_page')
+        apply_ui(self, 'favorites_page')    # 排版喺 .ui（Designer 可調 margin / 行高 / 兩組 FILTER 位置）
+        stamp(self, _STAMP)
         self._lang = DEFAULT_LANG
         self._directory = directory          # e2e 注入 fake；None → lazy get_directory()（只讀 cache）
 
@@ -95,67 +103,36 @@ class FavoritesPage(QWidget):
         self._market = mkt if mkt in MARKETS else 'ALL'
         self._type = ty if ty in TYPES else 'ALL'
 
-        v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 8)
-        v.setSpacing(6)
-
-        # ── 頂欄：新增輸入（🤖 模糊輸入一律經 gateway/symbol_input）+ 新增 / 刪除所選 ──
-        top = QHBoxLayout()
-        self.add_edit = QLineEdit()
-        self.add_edit.setObjectName('fav_add_edit')
-        self.add_edit.setPlaceholderText(t('fav_add_ph', self._lang))
-        self.completer = attach_symbol_input(self.add_edit, self._candidates, lang=self._lang)
-        self.add_edit.returnPressed.connect(self._on_add_clicked)
-        top.addWidget(self.add_edit, 1)
-        self.add_btn = QPushButton(t('fav_add', self._lang))
-        self.add_btn.setObjectName('fav_add_btn')
-        self.add_btn.setProperty('og', 'favbtn')
-        self.add_btn.clicked.connect(self._on_add_clicked)
-        top.addWidget(self.add_btn)
-        self.remove_btn = QPushButton(t('fav_remove', self._lang))
-        self.remove_btn.setObjectName('fav_remove_btn')
-        self.remove_btn.setProperty('og', 'favbtn')
-        self.remove_btn.clicked.connect(self._on_remove_clicked)
-        top.addWidget(self.remove_btn)
-        v.addLayout(top)
-
-        # ── FILTER 兩組（exclusive 各組；recipe 同標的列表頁）──
-        filt = QHBoxLayout()
-        filt.setSpacing(3)
+        # FILTER 兩組（exclusive 各組；recipe 同標的列表頁）— 按鈕數量屬資料，填進 `.ui` 嘅 slot
         self._mkt_btns, self._type_btns = {}, {}
-        self._mk_group(filt, MARKETS, MARKET_KEYS, self._mkt_btns,
+        self._mk_group(self.mktSlot, MARKETS, MARKET_KEYS, self._mkt_btns,
                        lambda m: self._set_filter(market=m))
-        self._mk_group(filt, TYPES, TYPE_KEYS, self._type_btns,
+        self._mk_group(self.typeSlot, TYPES, TYPE_KEYS, self._type_btns,
                        lambda ty: self._set_filter(type_=ty))
-        filt.addStretch(1)
-        v.addLayout(filt)
-
-        # ── 表格（多選行 → 刪除）──
-        self.model = _FavModel(self)
-        self.table = QTableView()
-        self.table.setObjectName('fav_table')
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.verticalHeader().setVisible(False)
-        v.addWidget(self.table, 1)
-
-        # ── 底部：收藏總數 / 顯示筆數 + status ──
-        bottom = QHBoxLayout()
-        self.counts_lbl = QLabel()
-        self.counts_lbl.setObjectName('fav_counts')
-        bottom.addWidget(self.counts_lbl, 1)
-        self.status_lbl = QLabel()
-        self.status_lbl.setObjectName('fav_status')
-        bottom.addWidget(self.status_lbl)
-        v.addLayout(bottom)
+        self._connect_signals()
+        self._setup_table()
 
         self._sync_checked()
         theme_mod.add_listener(self._on_theme_changed)
         self._apply_theme_qss(theme_mod.CURRENT)
         self._refresh()
+
+    def _connect_signals(self):
+        # 🤖 模糊輸入一律經 gateway/symbol_input（debounce → 本地 index 候選）
+        self.completer = attach_symbol_input(self.fav_add_edit, self._candidates,
+                                             lang=self._lang)
+        self.fav_add_edit.returnPressed.connect(self._on_add_clicked)
+        self.fav_add_btn.clicked.connect(self._on_add_clicked)
+        self.fav_remove_btn.clicked.connect(self._on_remove_clicked)
+
+    def _setup_table(self):
+        self.model = _FavModel(self)
+        self.fav_table.setModel(self.model)
+        self.fav_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.fav_table.setSelectionMode(QAbstractItemView.ExtendedSelection)   # 多選 → 刪除
+        self.fav_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fav_table.setSortingEnabled(True)
+        self.fav_table.verticalHeader().setVisible(False)
 
     # ── lazy index（只讀 cache，唔會自動開網絡）──
     def _dir(self):
@@ -200,31 +177,31 @@ class FavoritesPage(QWidget):
         return [] if d.has_code(q) else d.search(q, types=None)
 
     def _on_add_clicked(self):
-        raw = self.add_edit.text().strip()
+        raw = self.fav_add_edit.text().strip()
         if not raw:
             return
         entry = self._dir().get(raw)
         code = entry['code'] if entry else raw.upper()
         if entry is None and not _CODE_LIKE.match(code):
-            self.status_lbl.setText(t('fav_bad_code', self._lang))   # status 唔使等 refresh
+            self.fav_status.setText(t('fav_bad_code', self._lang))   # status 唔使等 refresh
             return
         ok, msg_key, item = favorites.add(code, entry)
         self._refresh()
         if ok:
-            self.add_edit.clear()
-            self.status_lbl.setText(f'✅ {item["code"]} — {t(msg_key, self._lang)}')
+            self.fav_add_edit.clear()
+            self.fav_status.setText(f'✅ {item["code"]} — {t(msg_key, self._lang)}')
         else:
-            self.status_lbl.setText(f'⚠️ {code} — {t(msg_key, self._lang)}')
+            self.fav_status.setText(f'⚠️ {code} — {t(msg_key, self._lang)}')
 
     def _on_remove_clicked(self):
-        rows = {idx.row() for idx in self.table.selectionModel().selectedRows()}
+        rows = {idx.row() for idx in self.fav_table.selectionModel().selectedRows()}
         if not rows:
-            self.status_lbl.setText(f'⚠️ {t("fav_no_sel", self._lang)}')
+            self.fav_status.setText(f'⚠️ {t("fav_no_sel", self._lang)}')
             return
         codes = [self.model.row_at(r)['code'] for r in rows]
         favorites.remove(codes)
         self._refresh()   # 🤖 set status 必須喺 refresh 之後（_update_counts 會蓋住）
-        self.status_lbl.setText(f'🗑 {t("fav_removed", self._lang)} {len(codes)}')
+        self.fav_status.setText(f'🗑 {t("fav_removed", self._lang)} {len(codes)}')
 
     # ── 顯示 ──
     def _visible_rows(self):
@@ -243,12 +220,12 @@ class FavoritesPage(QWidget):
         self._update_counts()
 
     def _configure_columns(self):
-        hdr = self.table.horizontalHeader()
+        hdr = self.fav_table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
         widths = {0: 160, 1: 240, 2: 70, 3: 90, 4: 100}
         for col, w in widths.items():
-            self.table.setColumnWidth(col, w)
+            self.fav_table.setColumnWidth(col, w)
 
     def _cell(self, row, key):
         if key == 'name':
@@ -265,11 +242,11 @@ class FavoritesPage(QWidget):
 
     def _update_counts(self):
         total = len(favorites.load_items())
-        self.counts_lbl.setText(
+        self.fav_counts.setText(
             f'{t("fav_count", self._lang)} {total:,}　‖　'
             f'{t("fav_showing", self._lang)} {self.model.rowCount():,}')
         if total == 0:
-            self.status_lbl.setText(t('fav_empty', self._lang))
+            self.fav_status.setText(t('fav_empty', self._lang))
 
     # ── theme / i18n ──
     def _apply_theme_qss(self, name):
@@ -285,9 +262,9 @@ class FavoritesPage(QWidget):
     def retranslate(self, lang):
         self._lang = lang
         self.completer.lang = lang   # 🤖 dropdown 名稱跟語言（display_for 直接食 GUI 語言碼）
-        self.add_edit.setPlaceholderText(t('fav_add_ph', lang))
-        self.add_btn.setText(t('fav_add', lang))
-        self.remove_btn.setText(t('fav_remove', lang))
+        apply_text(self, _TEXT, lang)
+        for obj, key in _PH.items():
+            getattr(self, obj).setPlaceholderText(t(key, lang))
         for k, b in self._mkt_btns.items():
             b.setText(t(MARKET_KEYS[k], lang))
         for k, b in self._type_btns.items():

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QuotesPage</class>
+ <widget class="QWidget" name="quotes_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>10</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 頂欄：左 = 指標總開關 + 指標選項 menu + 策略下拉｜右 = layout 按鈕 -->
+   <item>
+    <layout class="QHBoxLayout" name="topBar">
+     <property name="leftMargin"><number>0</number></property>
+     <property name="topMargin"><number>0</number></property>
+     <property name="rightMargin"><number>0</number></property>
+     <property name="bottomMargin"><number>0</number></property>
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QPushButton" name="ind_toggle">
+       <property name="checkable"><bool>true</bool></property>
+       <property name="text"><string>顯示指標</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="ind_menu_btn">
+       <property name="popupMode">
+        <enum>QToolButton::ToolButtonPopupMode::InstantPopup</enum>
+       </property>
+       <property name="text"><string>指標選項</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="strat_label">
+       <property name="text"><string>策略：</string></property>
+      </widget>
+     </item>
+     <!-- 策略下拉嘅 item = StrategyManager 配置，屬資料 → _rebuild_strategy_combo 填 -->
+     <item>
+      <widget class="QComboBox" name="strat_combo"/>
+     </item>
+     <item>
+      <spacer name="topStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <!-- layout 按鈕：數量 = LAYOUTS（1x1/1x2/2x2/2x3）屬資料 → _build_layout_btns 逐個填進
+          layoutSlot（objectName layout_&lt;name&gt; + property og=layoutbtn）；加 layout 唔使改呢檔。 -->
+     <item>
+      <layout class="QHBoxLayout" name="layoutSlot">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <property name="spacing"><number>4</number></property>
+      </layout>
+     </item>
+    </layout>
+   </item>
+   <!-- grid：cell 數量 = N_CELLS（ChartCell 排版見 chart_cell.ui）屬資料；邊格可見、放邊個 row/col、
+        row/col stretch 全部屬行為 → _apply_layout 按 LAYOUTS 設。切換 layout 只 hide/show + reposition，
+        cells 永不銷毀（唔中斷 stream、唔丟狀態）。 -->
+   <item>
+    <layout class="QGridLayout" name="gridSlot">
+     <property name="spacing"><number>6</number></property>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

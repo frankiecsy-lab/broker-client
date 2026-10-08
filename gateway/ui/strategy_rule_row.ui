@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>strategy_rule_row</class>
+ <!-- 一條「已加條件」(draft) 嘅排版：符號摘要 label 食晒剩低嘅寬 + ✕ 移除掣。
+      數量屬資料（有幾多條 = `_draft`）→ `_CondEditor._render_rules` 逐個 `load_ui` 呢檔填進
+      `str_<side>_rulesSlot`；load 後先將 objectName 改做 `str_<side>_rule_{i}` / `..._del`
+      （E2E hook + 逐條刪除嘅身份），所以呢度嘅名只係模板名。
+      label 食剩低嘅寬用 sizePolicy horstretch（`.ui` 嘅 <item> 唔帶 stretch 屬性）。 -->
+ <widget class="QWidget" name="strategy_rule_row">
+  <layout class="QHBoxLayout" name="rowLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <property name="spacing"><number>4</number></property>
+   <item>
+    <widget class="QLabel" name="rule_lbl">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>1</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <!-- 文字屬資料：來源係 strategies.rule_summary(rule) -->
+     <property name="text"><string>MA20&gt;MA120 (+60)</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="rule_del_btn">
+     <property name="text"><string>✕</string></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

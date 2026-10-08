@@ -15,7 +15,10 @@
   其餘 mode → 對目前顯示行做 substring 過濾（純本地）。
 - **一鍵更新**：QThread 行 directory.fetch(US+HK 全 plan) — progress 逐段更新 status。
 - **底部**：市場 × 種類 計數（全 index）+ 顯示筆數 + 更新時間。
-- **Theme/i18n**：照其他頁 recipe；retranslate 會一併 refresh（偽行名/面包屑跟語言）。
+- **排版**：`gateway/ui/symbol_list_page.ui`（Designer 可調）— 搜尋欄、面包屑欄、表格、底部欄喺
+  `.ui`；**FILTER 掣嘅數量**屬資料（= `MARKETS` / `TYPES` registry）→ 由 `_mk_group` 逐個填進
+  `.ui` 預留嘅 `filterSlot`（加市場／種類唔使改 `.ui`）。
+- **Theme/i18n**：照其他頁 recipe（`gateway/ui/bind.py` 嘅 `stamp` / `apply_text`）；retranslate 會一併 refresh（偽行名/面包屑跟語言）。
 
 單獨運行：`python gateway/pages/symbol_list_page.py`。
 """
@@ -31,14 +34,15 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QAbstractTableModel, QThread, QTimer, Signal  # noqa: E402
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout,  # noqa: E402
-                               QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QTableView, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHeaderView,  # noqa: E402
+                               QPushButton, QWidget)
 
 from modules.symbol_search import display_for, to_simplified  # noqa: E402
 import gateway.theme as theme_mod  # noqa: E402
 from gateway import state_store  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 # ── 常量（FILTER 按鈕順序 = 用戶列舉順序）──
 MARKETS = ('ALL', 'HK', 'US')
@@ -72,6 +76,12 @@ WTYPE_KEYS = {'CALL': 'sl_w_call', 'PUT': 'sl_w_put', 'BULL': 'sl_w_bull',
               'BEAR': 'sl_w_bear', 'INLINE': 'sl_w_inline'}
 WTYPE_ORDER = ('CALL', 'PUT', 'BULL', 'BEAR', 'INLINE', 'OTHER')   # w2 類別顯示順序
 OTYPE_KEYS = {'CALL': 'sl_opt_call', 'PUT': 'sl_opt_put'}
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
+_STAMP = {'symbol_list_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
+          'sl_update_btn': {'og': 'slbtn'}, 'sl_back_btn': {'og': 'slbtn'}}
+_TEXT = {'sl_update_btn': 'sl_update', 'sl_back_btn': 'sl_back'}
+_PH = {'sl_search': 'sl_search_ph'}   # placeholder 唔屬 setText → 单独一行 loop
 
 
 class _ListModel(QAbstractTableModel):
@@ -173,7 +183,8 @@ class SymbolListPage(QWidget):
 
     def __init__(self, directory=None, option_fetcher=None):
         super().__init__()
-        self.setObjectName('symbol_list_page')
+        apply_ui(self, 'symbol_list_page')   # 排版（搜尋欄/面包屑欄/表格/底部欄）全部喺 `.ui`
+        stamp(self, _STAMP)                  # og / WA_StyledBackground：Designer 帶唔住 dynamic property
         self._lang = DEFAULT_LANG
         self._directory = directory          # e2e 注入 fake；None → lazy get_directory()（只讀 cache）
         self._option_fetcher = option_fetcher  # e2e 注入 fake；None → lazy symbol_search.fetch_option_chain
@@ -187,77 +198,34 @@ class SymbolListPage(QWidget):
         self._mode = self._mode_for_type(self._type)   # 還原時直接返返對應下鑽起點
         self._drill = []                               # 下鑽上下文 stack（{'owner':…}/{'wtype':…}/{'code':…}）
 
-        v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 8)
-        v.setSpacing(6)
-
-        # ── 頂欄：模糊輸入 + 一鍵更新 ──
-        top = QHBoxLayout()
-        self.search_edit = QLineEdit()
-        self.search_edit.setObjectName('sl_search')
-        self.search_edit.setPlaceholderText(t('sl_search_ph', self._lang))
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.setInterval(SEARCH_DEBOUNCE_MS)
-        self._debounce.timeout.connect(self._refresh)
-        self.search_edit.textChanged.connect(lambda _q: self._debounce.start())
-        top.addWidget(self.search_edit, 1)
-        self.update_btn = QPushButton(t('sl_update', self._lang))
-        self.update_btn.setObjectName('sl_update_btn')
-        self.update_btn.setProperty('og', 'slbtn')
-        self.update_btn.clicked.connect(self._on_update_clicked)
-        top.addWidget(self.update_btn)
-        v.addLayout(top)
-
-        # ── FILTER 兩組（exclusive 各組；再撳同一個 = 唔取消，永遠有一個 checked）──
-        filt = QHBoxLayout()
-        filt.setSpacing(3)
-        self._mkt_btns, self._type_btns = {}, {}
-        self._mk_group(filt, MARKETS, MARKET_KEYS, self._mkt_btns,
-                       lambda m: self._set_filter(market=m))
-        self._mk_group(filt, TYPES, TYPE_KEYS, self._type_btns,
-                       lambda ty: self._set_filter(type_=ty))
-        filt.addStretch(1)
-        v.addLayout(filt)
-
-        # ── 面包屑（flat 隱藏）：◀ 返回 + 路徑 ──
-        nav = QHBoxLayout()
-        self.back_btn = QPushButton(t('sl_back', self._lang))
-        self.back_btn.setObjectName('sl_back_btn')
-        self.back_btn.setProperty('og', 'slbtn')
-        self.back_btn.clicked.connect(self._back)
-        nav.addWidget(self.back_btn)
-        self.crumb_lbl = QLabel()
-        self.crumb_lbl.setObjectName('sl_crumb')
-        nav.addWidget(self.crumb_lbl, 1)
-        v.addLayout(nav)
-
-        # ── 表格 ──
-        self.model = _ListModel(self)
-        self.table = QTableView()
-        self.table.setObjectName('sl_table')
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.verticalHeader().setVisible(False)
-        # 🤖 QTableView 冇 QTableWidget.cellClicked — 用 QAbstractItemView.clicked（QModelIndex）
-        self.table.clicked.connect(lambda idx: self._on_cell_clicked(idx.row(), idx.column()))
-        v.addWidget(self.table, 1)
-
-        # ── 底部：市場×種類計數 + 顯示筆數/更新時間 ──
-        bottom = QHBoxLayout()
-        self.counts_lbl = QLabel()
-        self.counts_lbl.setObjectName('sl_counts')
-        bottom.addWidget(self.counts_lbl, 1)
-        self.status_lbl = QLabel()
-        self.status_lbl.setObjectName('sl_status')
-        bottom.addWidget(self.status_lbl)
-        v.addLayout(bottom)
+        self._setup_table()
+        self._build_filter_btns()   # 兩組 FILTER 掣按 MARKETS/TYPES 填進 `.ui` 嘅 filterSlot
+        self._connect_signals()
 
         theme_mod.add_listener(self._on_theme_changed)
         self._apply_theme_qss(theme_mod.CURRENT)
+        self._retranslate_widgets()   # `.ui` 內嘅文字屬裝飾 → 一律跟語言覆寫
         self._refresh()
+
+    # ── 表格行為（控件本身喺 `.ui`）──
+    def _setup_table(self):
+        self.model = _ListModel(self)
+        self.sl_table.setModel(self.model)
+        self.sl_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.sl_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.sl_table.setSortingEnabled(True)
+        self.sl_table.verticalHeader().setVisible(False)
+
+    def _connect_signals(self):
+        self._debounce = QTimer(self)   # 模糊輸入 debounce（行為，唔屬排版）
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(SEARCH_DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._refresh)
+        self.sl_search.textChanged.connect(lambda _q: self._debounce.start())
+        self.sl_update_btn.clicked.connect(self._on_update_clicked)
+        self.sl_back_btn.clicked.connect(self._back)
+        # 🤖 QTableView 冇 QTableWidget.cellClicked — 用 QAbstractItemView.clicked（QModelIndex）
+        self.sl_table.clicked.connect(lambda idx: self._on_cell_clicked(idx.row(), idx.column()))
 
     # ── lazy index（只讀 cache，唔會自動開網絡）──
     def _dir(self):
@@ -272,11 +240,21 @@ class SymbolListPage(QWidget):
             self._option_fetcher = fetch_option_chain
         return self._option_fetcher
 
+    def _build_filter_btns(self):
+        """FILTER 兩組（exclusive 各組；再撳同一個 = 唔取消，永遠有一個 checked）。
+        掣嘅**數量**屬資料（= MARKETS / TYPES registry）→ 逐個填進 `.ui` 預留嘅 `filterSlot`。"""
+        self._mkt_btns, self._type_btns = {}, {}
+        self._mk_group(self.filterSlot, MARKETS, MARKET_KEYS, self._mkt_btns,
+                       lambda m: self._set_filter(market=m))
+        self._mk_group(self.filterSlot, TYPES, TYPE_KEYS, self._type_btns,
+                       lambda ty: self._set_filter(type_=ty))
+        self.filterSlot.addStretch(1)
+
     def _mk_group(self, layout, keys, i18n_keys, store, on_pick):
         grp = QButtonGroup(self)
         grp.setExclusive(True)
         for k in keys:
-            b = QPushButton(t(i18n_keys[k], self._lang))
+            b = QPushButton()   # 文字屬語言 → retranslate 先填
             b.setObjectName(f'sl_f_{k}')
             b.setProperty('og', 'filterbtn')
             b.setCheckable(True)
@@ -357,7 +335,7 @@ class SymbolListPage(QWidget):
             return   # 一條鏈未返 — 唔併發開第二條（防 OpenD 重入）
         self._chain_worker = _ChainWorker(code, self._opt_fetcher(), self)
         self._chain_worker.progress.connect(
-            lambda i, total, d: self.status_lbl.setText(
+            lambda i, total, d: self.sl_status.setText(
                 f'⏳ {t("sl_chain_loading", self._lang)} {code} {i}/{total} {d}…'))
         self._chain_worker.done.connect(self._on_chain_done)
         self._chain_worker.start()
@@ -370,14 +348,14 @@ class SymbolListPage(QWidget):
             self._mode = 'o2'
         self._refresh()   # 🤖 先 refresh — 唔然 status 會俾 _update_counts 蓋住（同 _on_update_done 同一教訓）
         if ok and not rows:
-            self.status_lbl.setText(f'⚠️ {t("sl_chain_none", self._lang)}：{code}')
+            self.sl_status.setText(f'⚠️ {t("sl_chain_none", self._lang)}：{code}')
         elif not ok:
-            self.status_lbl.setText(f'❌ {msg}')   # 留喺 o1 — 如實失敗，唔入空鏈頁
+            self.sl_status.setText(f'❌ {msg}')   # 留喺 o1 — 如實失敗，唔入空鏈頁
 
     # ── 各 mode 嘅顯示行 ──
     def _visible_rows(self):
         d = self._dir()
-        q = self.search_edit.text().strip()
+        q = self.sl_search.text().strip()
         rows = d.search(q, limit=10 ** 9, types=None) if q else list(d.entries)
         if self._market != 'ALL':
             rows = [e for e in rows if str(e.get('market', '')).upper() == self._market]
@@ -433,7 +411,7 @@ class SymbolListPage(QWidget):
 
     def _rows_o1(self):
         d = self._dir()
-        q = self.search_edit.text().strip()
+        q = self.sl_search.text().strip()
         rows = d.search(q, limit=10 ** 9, types=('STOCK', 'ETF')) if q else \
             [e for e in d.entries if e.get('type') in ('STOCK', 'ETF')]
         if self._market != 'ALL':
@@ -447,7 +425,7 @@ class SymbolListPage(QWidget):
     def _qfilter(self, rows, fields):
         """mode 內本地 substring 過濾（模糊輸入喺下鑽頁照樣有用；唔再經 index 打分）。
            兩邊 t2s 正規化 — 顯示名可能係港式繁體（滙豐），用戶打匯豐都要 match 到。"""
-        q = self.search_edit.text().strip()
+        q = self.sl_search.text().strip()
         if not q:
             return rows
         ql = to_simplified(q).lower()
@@ -465,7 +443,7 @@ class SymbolListPage(QWidget):
         self._update_counts()
 
     def _configure_columns(self):
-        hh = self.table.horizontalHeader()
+        hh = self.sl_table.horizontalHeader()
         cols = SCHEMAS[self._mode]
         stretch = cols.index('name') if 'name' in cols else len(cols) - 1
         for i in range(len(cols)):
@@ -474,26 +452,26 @@ class SymbolListPage(QWidget):
 
     def _update_nav(self):
         flat = self._mode == 'flat'
-        self.back_btn.setVisible(not flat)
+        self.sl_back_btn.setVisible(not flat)
         sep = ' ▸ '
         if flat:
-            self.crumb_lbl.setText('')
+            self.sl_crumb.setText('')
             return
         d = self._dir()
         if self._mode == 'w1':
-            self.crumb_lbl.setText(t('sl_type_warrant', self._lang) + sep + t('sl_drill_hint', self._lang))
+            self.sl_crumb.setText(t('sl_type_warrant', self._lang) + sep + t('sl_drill_hint', self._lang))
         elif self._mode in ('w2', 'w3'):
             owner = self._drill[0]['owner']
             label = d.display_name(owner, self._lang) or owner
             seg = t('sl_type_warrant', self._lang) + sep + (label or t('sl_us_warrant', self._lang))
             if self._mode == 'w3' and len(self._drill) >= 2:
                 seg += sep + self._wtype_label(self._drill[1]['wtype'])
-            self.crumb_lbl.setText(seg + sep + t('sl_drill_hint', self._lang) if self._mode == 'w2' else seg)
+            self.sl_crumb.setText(seg + sep + t('sl_drill_hint', self._lang) if self._mode == 'w2' else seg)
         elif self._mode == 'o1':
-            self.crumb_lbl.setText(t('sl_type_option', self._lang) + sep + t('sl_option_note', self._lang))
+            self.sl_crumb.setText(t('sl_type_option', self._lang) + sep + t('sl_option_note', self._lang))
         elif self._mode == 'o2':
             code = self._drill[-1]['code']
-            self.crumb_lbl.setText(t('sl_type_option', self._lang) + sep + code)
+            self.sl_crumb.setText(t('sl_type_option', self._lang) + sep + code)
 
     # ── 單元格格式化（model 回調）──
     def _cell(self, row, key):
@@ -535,10 +513,10 @@ class SymbolListPage(QWidget):
             seg = ' · '.join(f'{self._type_label(ty)} {n:,}' for ty, n in sorted(by[mkt].items()))
             parts.append(f'{mkt}: {seg}')
         total = sum(sum(c.values()) for c in by.values())
-        self.counts_lbl.setText(
+        self.sl_counts.setText(
             '　‖　'.join(parts) + f'　‖　{t("sl_total", self._lang)} {total:,}')
         fetched = self._dir().fetched_at or '—'
-        self.status_lbl.setText(
+        self.sl_status.setText(
             f'{t("sl_showing", self._lang)} {self.model.rowCount():,}　·　'
             f'{t("sl_updated_at", self._lang)} {fetched}')
 
@@ -546,21 +524,21 @@ class SymbolListPage(QWidget):
     def _on_update_clicked(self):
         if self._worker is not None and self._worker.isRunning():
             return
-        self.update_btn.setEnabled(False)
-        self.status_lbl.setText(f'⏳ {t("sl_updating", self._lang)}')
+        self.sl_update_btn.setEnabled(False)
+        self.sl_status.setText(f'⏳ {t("sl_updating", self._lang)}')
         self._worker = _FetchWorker(self._dir(), self)
         self._worker.progress.connect(
-            lambda label, count: self.status_lbl.setText(f'⏳ {label} +{count:,}'))
+            lambda label, count: self.sl_status.setText(f'⏳ {label} +{count:,}'))
         self._worker.done.connect(self._on_update_done)
         self._worker.start()
 
     def _on_update_done(self, ok, msg):
-        self.update_btn.setEnabled(True)
+        self.sl_update_btn.setEnabled(True)
         if ok:
             self._chain_cache.clear()   # index 換咗 → 鏈 cache 一併作廢
             self._refresh()   # entries 已喺 fetch 內 merge + save → 表格/計數跟新
         # result 放最後先至睇到 — _refresh 會將 status 寫返「顯示 N · 更新於…」（下次 filter 就蓋返）
-        self.status_lbl.setText(f'{"✅" if ok else "❌"} {msg}')
+        self.sl_status.setText(f'{"✅" if ok else "❌"} {msg}')
 
     # ── 本地記憶（filter 選擇；下鑽路徑屬即時狀態，唔持久化）──
     def _save_state(self):
@@ -578,12 +556,12 @@ class SymbolListPage(QWidget):
         self._apply_theme_qss(name)
 
     # ── i18n ──
-    def retranslate(self, lang):
-        self._lang = lang
-        self.search_edit.setPlaceholderText(t('sl_search_ph', lang))
-        self.update_btn.setText(t('sl_update', lang))
-        self.back_btn.setText(t('sl_back', lang))
-        for k, b in self._mkt_btns.items():
+    def _retranslate_widgets(self):
+        lang = self._lang
+        apply_text(self, _TEXT, lang)   # 一鍵更新 / 返回掣（objectName → i18n key）
+        for name, key in _PH.items():   # placeholder 唔屬 setText
+            getattr(self, name).setPlaceholderText(t(key, lang))
+        for k, b in self._mkt_btns.items():   # FILTER 掣按 registry 動態生成 → 逐個 setText
             b.setText(t(MARKET_KEYS[k], lang))
         for k, b in self._type_btns.items():
             b.setText(t(TYPE_KEYS[k], lang))
@@ -591,6 +569,10 @@ class SymbolListPage(QWidget):
                 b.setToolTip(t('sl_option_note', lang))
             elif k == 'WARRANT':
                 b.setToolTip(t('sl_drill_hint', lang))
+
+    def retranslate(self, lang):
+        self._lang = lang
+        self._retranslate_widgets()
         self._refresh()   # rows（偽行名/面包屑/計數）+ headerData 全部跟語言重建
 
 

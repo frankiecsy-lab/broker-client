@@ -1,5 +1,13 @@
 """One Gate 主外殼 — 頂部導航欄（按鈕 + QStackedWidget）+ 語言 / theme toolbar。
 
+外殼骨架喺 `gateway/ui/app_shell.ui`（Qt Designer 可直接調 navbar margin / 間距 / brand 位置），
+彈出窗骨架喺 `gateway/ui/popup_page.ui`（root 照 `oneGateRoot`，食同一套 theme QSS），
+呢檔得返 registry 邏輯：`navSlot` / `menuSlot` / `langSlot` 三個空 layout slot 由
+`PAGE_KEYS` / `NAV_DIRECT` / `NAV_MENUS` / `LANGS` 喺運行期填 — **加新頁只改 registry，
+唔使改 `.ui`**（呢個係刻意設計：按鈕嘅「數量」屬資料，可調嘅「排版」先屬 UI）。
+`oneGateRoot` / `navBar` 嘅 QSS property 由 `_STAMP` 注入；動態生成嘅 nav/lang 按鈕就喺
+生成嗰個 loop 入面直接 setProperty（知識喺邊就喺邊 bind）。
+
 - nav 按鈕同 `gateway/pages/` 嘅 page 一一对應；PAGE_KEYS 係頁面 registry，
   加新頁 = 呢度加一行 + pages/ 加一個檔。
 - **nav 分組**（用戶要求）：直接按鈕 = 首頁 / 行情 / FUTU 交易 / 標的收藏 / 指標管理；**「測試」子選單** =
@@ -17,9 +25,8 @@
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QPushButton, QStackedWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QMainWindow, QMenu,
+                               QPushButton, QWidget)
 
 from gateway.i18n import DEFAULT_LANG, LANGS, LANG_SHORT, t, theme_toggle_text
 from gateway.pages.connection_page import ConnectionPage
@@ -33,6 +40,8 @@ from gateway.pages.quotes_page import QuotesPage
 from gateway.pages.strategies_page import StrategiesPage
 from gateway.pages.symbol_list_page import SymbolListPage
 from gateway.theme import apply_theme
+from gateway.ui.bind import stamp
+from gateway.ui.loader import apply_ui
 
 # ── 頁面 registry：nav 按鈕 + QStackedWidget 全部由呢個 list 生成 ──
 PAGE_KEYS = ('home', 'quotes', 'kline', 'fulltest', 'connection', 'futu_trade',
@@ -54,23 +63,24 @@ NAV_DIRECT = ('home', 'quotes', 'futu_trade', 'favorites', 'indicators', 'strate
 NAV_MENUS = {'test': ('kline', 'fulltest', 'symbol_list'),
              'settings': ('connection',)}
 
+# 外殼靜態 widget 嘅 QSS property（Designer 帶唔住自訂 dynamic property，見 gateway/ui/bind.py）。
+# 動態生成嘅 nav / menu / lang 按鈕就喺生成它嘅 loop 入面 setProperty — 知識喺邊 bind 喺邊。
+_STAMP = {'oneGateRoot': {'og': 'shell'}, 'navBar': {'og': 'navbar'}}
+
 
 class _PopupPageWindow(QWidget):
     """彈出視窗 — 承載由 stack 搬出嘅 page 同一實例；關閉 → 通知 shell 搬返入 stack。
-    objectName 沿用 'oneGateRoot'（theme QSS 嘅 shell 背景 selector）；theme 本身 app 級自動跟隨。"""
+    排版喺 `gateway/ui/popup_page.ui`（root objectName = 'oneGateRoot'，即 theme QSS 嘅 shell
+    背景 selector）；theme 本身 app 級自動跟隨。"""
 
     def __init__(self, shell, key):
         super().__init__()
+        apply_ui(self, 'popup_page')
         self._shell = shell
         self._key = key
-        self.setObjectName('oneGateRoot')
         self.setWindowTitle(t(f'nav_{key}', shell._lang))
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
-        v.addWidget(shell.pages[key], 1)   # reparent：stack → 呢個窗
-        shell.pages[key].show()            # Qt 坑：reparent 之後 widget 自動隱藏 → 唔 show 就空白窗
-        self.resize(1200, 800)
+        self.pageSlot.addWidget(shell.pages[key], 1)   # reparent：stack → 呢個窗
+        shell.pages[key].show()                        # Qt 坑：reparent 之後 widget 自動隱藏 → 唔 show 就空白窗
 
     def closeEvent(self, e):
         self._shell._return_page(self._key)   # 唔 destroy page（冇 WA_DeleteOnClose）— 搬返入 stack
@@ -82,35 +92,17 @@ class OneGateWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName('oneGateWindow')
+        apply_ui(self, 'app_shell')       # 骨架喺 .ui；以下只填 registry 驅動嘅部分
+        stamp(self, _STAMP)
         self._lang = DEFAULT_LANG
         self._theme_name = 'dark'
-
-        root = QWidget()
-        root.setObjectName('oneGateRoot')
-        root.setProperty('og', 'shell')
-        root.setAttribute(Qt.WA_StyledBackground, True)
-        v = QVBoxLayout(root)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
-
-        # ── 頂部導航欄 ──
-        navbar = QWidget()
-        navbar.setObjectName('navBar')
-        navbar.setProperty('og', 'navbar')
-        navbar.setAttribute(Qt.WA_StyledBackground, True)
-        h = QHBoxLayout(navbar)
-        h.setContentsMargins(16, 8, 16, 8)
-
-        brand = QLabel('One Gate')
-        brand.setObjectName('brandLbl')
-        h.addWidget(brand)
-        h.addSpacing(24)
 
         self.nav_btns = {}     # 直接頁 key → QPushButton
         self.menu_btns = {}    # 子選單 key（test/settings）→ QPushButton
         self.page_actions = {} # 子選單內頁 key → QAction（e2e 可 trigger / 斷言）
         self._popups = {}      # key → _PopupPageWindow（每頁最多一個彈出窗）
+
+        # ── 直接 nav 按鈕（填 app_shell.ui 嘅 navSlot）──
         for key in NAV_DIRECT:
             btn = QPushButton()
             btn.setObjectName(f'nav_{key}')
@@ -121,7 +113,7 @@ class OneGateWindow(QMainWindow):
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
             btn.customContextMenuRequested.connect(
                 lambda pos, k=key, b=btn: self._nav_context_menu(b, pos, k))
-            h.addWidget(btn)
+            self.navSlot.addWidget(btn)
             self.nav_btns[key] = btn
 
         # ── 子選單（用戶要求：測試 / 設定 集中）──
@@ -141,10 +133,8 @@ class OneGateWindow(QMainWindow):
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
             btn.customContextMenuRequested.connect(
                 lambda pos, b=btn, ps=pages: self._menu_context_menu(b, pos, ps))
-            h.addWidget(btn)
+            self.menuSlot.addWidget(btn)
             self.menu_btns[mk] = btn
-
-        h.addStretch(1)
 
         # ── 語言三按鈕（用戶：唔准 dropdown；endonym 短標籤唔跟 UI 語言變）──
         self.lang_btns = {}
@@ -157,29 +147,19 @@ class OneGateWindow(QMainWindow):
             b.setCheckable(True)
             b.clicked.connect(lambda _c=False, c=code: self._set_lang(c))
             grp_lang.addButton(b)
-            h.addWidget(b)
+            self.langSlot.addWidget(b)
             self.lang_btns[code] = b
 
-        self.theme_btn = QPushButton()
-        self.theme_btn.setObjectName('theme_btn')
         self.theme_btn.setCheckable(True)  # checked = light，unchecked = dark（預設）
-        h.addWidget(self.theme_btn)
+        self.theme_btn.toggled.connect(self._on_theme_toggled)
 
-        v.addWidget(navbar)
-
-        # ── page stack ──
-        self.stack = QStackedWidget()
-        self.stack.setObjectName('page_stack')
+        # ── page stack（widget 喺 .ui，page 由 registry 填）──
+        self.stack = self.page_stack
         self.pages = {}
         for key in PAGE_KEYS:
             page = _PAGE_CLASSES[key]()
             self.pages[key] = page
             self.stack.addWidget(page)
-        v.addWidget(self.stack, 1)
-
-        self.setCentralWidget(root)
-
-        self.theme_btn.toggled.connect(self._on_theme_toggled)
 
         self._select_page(PAGE_KEYS[0])   # 預設頁 = 首頁（用戶：首頁第一個進入）
         self._retranslate()

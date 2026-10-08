@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>IndicatorsPage</class>
+ <widget class="QWidget" name="indicators_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 頂欄：類型 / 位置 combo。兩邊嘅內容全部屬資料（類型 = INDICATOR_DEFS、位置 = 該類型准入
+        positions），由 indicators_page.py 即時填 → 呢度只留控件同排版 -->
+   <item>
+    <layout class="QHBoxLayout" name="topRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QComboBox" name="ind_def_combo"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="ind_pos_combo"/>
+     </item>
+    </layout>
+   </item>
+   <!-- 參數列（label + SpinBox/QDoubleSpinBox/CheckBox，objectName ind_paramlbl_<key> / ind_param_<key>）
+        由 _rebuild_param_row 按 INDICATOR_DEFS[類型].params 填進 paramSlot
+        （參數數量屬資料；一行排版、間距先屬排版 → Designer 可調） -->
+   <item>
+    <layout class="QHBoxLayout" name="paramSlot">
+     <property name="spacing"><number>6</number></property>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="btnRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QPushButton" name="ind_add_btn">
+       <property name="text"><string>＋ 新增指標</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="ind_save_btn">
+       <property name="text"><string>✓ 套用修改</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="ind_remove_btn">
+       <property name="text"><string>🗑 移除所選</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="btnStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <!-- 可摺疊詳情：掣永遠喺度（預設收起由 code 控制 = 狀態，唔屬排版） -->
+   <item>
+    <widget class="QPushButton" name="ind_detail_toggle">
+     <property name="text"><string>▸ 說明（展開）</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="ind_detail_panel">
+     <layout class="QVBoxLayout" name="detailLayout">
+      <property name="leftMargin"><number>6</number></property>
+      <property name="topMargin"><number>4</number></property>
+      <property name="rightMargin"><number>6</number></property>
+      <property name="bottomMargin"><number>4</number></property>
+      <property name="spacing"><number>2</number></property>
+      <item>
+       <widget class="QLabel" name="ind_detail_desc">
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="text"><string/></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="ind_detail_usage">
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="text"><string/></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="ind_detail_head">
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="text"><string/></property>
+       </widget>
+      </item>
+      <!-- 每個參數一行解釋（objectName ind_detail_note_<key>）由 _rebuild_detail 按 params 填進
+           detailNoteSlot（解釋條數屬資料；面板排版屬 UI） -->
+      <item>
+       <layout class="QVBoxLayout" name="detailNoteSlot"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableView" name="ind_table">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomRow">
+     <item>
+      <widget class="QLabel" name="ind_counts">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="bottomStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="ind_status">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

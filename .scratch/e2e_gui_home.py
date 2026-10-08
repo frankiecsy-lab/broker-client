@@ -6,6 +6,7 @@ Run: python .scratch/e2e_gui_home.py   (from project root; QT_QPA_PLATFORM=offsc
 Flow:
 1. shell 註冊：PAGE_KEYS[0] == 'home'（預設頁）+ NAV_DIRECT 最前
 2. 構造：13 張卡 × 三分區；fake worker → 逐卡 set_row
+2b. `.ui` 骨架（home_page.ui）：grid slot 按 HOME_INDICES 填卡、stamp → QSS 生效
 3. 數字格式：_fmt_num/_fmt_big（zh 萬/億、en K/M/B）
 4. 逐個失敗如實：err 入卡、唔炸其他卡
 5. 刷新按鈕 → 再 fetch；worker 運行中唔重入
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from gateway.app import NAV_DIRECT, PAGE_KEYS  # noqa: E402
 from gateway.pages.home_page import (HOME_INDICES, HomePage,  # noqa: E402
                                      _fmt_big, _fmt_num)
+from gateway.theme import THEMES  # noqa: E402
 
 FAILURES = []
 
@@ -94,7 +96,25 @@ def main():
     ok_card = page._cards['HK.800000']
     check('成功卡：row 已入（last/prev/spark）',
           ok_card._row and ok_card._row['last'] == 100.0 and len(ok_card._row['spark']) == 12)
-    check('更新時間 label 已設', '更新於' in page.updated_lbl.text())
+    check('更新時間 label 已設', '更新於' in page.home_updated.text())
+
+    # ── 2b. `.ui` 骨架：排版喺 home_page.ui，卡填進預留 grid slot ──
+    print('── Part 2b: .ui 骨架 ──')
+    check('root 就係 HomePage 本身（冇 wrapper）', page.objectName() == 'home_page')
+    check('.ui 骨架齊：scroll / content / 三張 header / 三個 grid',
+          all(getattr(page, n, None) is not None
+              for n in ('home_title', 'home_updated', 'home_status', 'home_refresh_btn',
+                        'home_scroll', 'home_content', 'home_grp_hk', 'home_grp_cn',
+                        'home_grp_us', 'grid_hk', 'grid_cn', 'grid_us')))
+    check('QScrollArea 已 setWidget(home_content)', page.home_scroll.widget() is page.home_content)
+    check('卡數按 HOME_INDICES 落喺對應 grid',
+          [page.grid_hk.count(), page.grid_cn.count(), page.grid_us.count()]
+          == [sum(1 for e in HOME_INDICES if e['group'] == g) for g in ('HK', 'CN', 'US')])
+    check('分區 header 帶 role=grphead（stamp 注入，QSS 先食到）',
+          all(l.property('role') == 'grphead' for l in page._grp_lbls.values()))
+    check('header 顏色 = theme text（objectName→stamp→QSS 一條線通）',
+          page.home_grp_us.palette().color(page.home_grp_us.foregroundRole()).name().upper()
+          == THEMES['dark']['text'].upper())
 
     # ── 3. 數字格式 ──
     print('── Part 3: 數字格式 ──')
@@ -113,7 +133,7 @@ def main():
     # ── 5. 刷新 ──
     print('── Part 5: 刷新 ──')
     n0 = len(CALLS)
-    page.refresh_btn.click()
+    page.home_refresh_btn.click()
     wait_for(app, lambda: len(CALLS) > n0, 'second fetch')
     check('刷新按鈕 → 再 fetch', len(CALLS) == n0 + 1)
 
@@ -122,13 +142,13 @@ def main():
     page.retranslate('en')
     pump(app)
     check('EN：標題/分區跟語言',
-          page.title_lbl.text() == 'Global Market Pulse'
+          page.home_title.text() == 'Global Market Pulse'
           and page._grp_lbls['US'].text() == '🇺🇸 US (ETF proxies)'
           and 'SPY≈S&P 500' in page._grp_lbls['US'].toolTip())
     page.retranslate('zh_cn')
     pump(app)
     check('zh_cn：简体標題 + 指数名 key 有值',
-          page.title_lbl.text() == '全球市场脉搏'
+          page.home_title.text() == '全球市场脉搏'
           and page._grp_lbls['CN'].text() == '🇨🇳 A股')
 
     print()

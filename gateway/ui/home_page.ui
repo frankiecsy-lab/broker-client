@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>HomePage</class>
+ <widget class="QWidget" name="home_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1360</width>
+    <height>860</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>12</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>12</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <item>
+    <layout class="QHBoxLayout" name="topRow">
+     <item>
+      <widget class="QLabel" name="home_title">
+       <property name="text"><string>市場脈搏</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="topStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="home_updated">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="home_refresh_btn">
+       <property name="text"><string>Refresh</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="home_status">
+     <property name="text"><string/></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="home_scroll">
+     <property name="frameShape"><enum>QFrame::Shape::NoFrame</enum></property>
+     <property name="widgetResizable"><bool>true</bool></property>
+     <widget class="QWidget" name="home_content">
+      <layout class="QVBoxLayout" name="contentLayout">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <property name="spacing"><number>10</number></property>
+       <!-- 分區 header + 空 grid：卡由 home_page.py 按 HOME_INDICES 填進 grid_hk/cn/us
+            （卡嘅數量屬資料；分區位置、header、間距先屬排版 → Designer 可調） -->
+       <item>
+        <widget class="QLabel" name="home_grp_hk">
+         <property name="text"><string>HK</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="grid_hk">
+         <property name="spacing"><number>10</number></property>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="home_grp_cn">
+         <property name="text"><string>CN</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="grid_cn">
+         <property name="spacing"><number>10</number></property>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="home_grp_us">
+         <property name="text"><string>US</string></property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="grid_us">
+         <property name="spacing"><number>10</number></property>
+        </layout>
+       </item>
+       <item>
+        <spacer name="contentStretch">
+         <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+         <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -11,6 +11,7 @@ Flow:
 4. 開關：disable→axes 減、enable→返；用戶 _view（平移/縮放）保持
 5. cache：hover 零重算 / set_bars +1 / 改參數 +1 且陣列唔同
 6. KlinePage 嵌入：chart 實例已換、開關掣列、跨頁同步（add/disable/改參數）、theme QSS 帶 indtoggle
+   + `.ui` 骨架（kline_page.ui：embeddedSlot 填嵌入內容、ind_bar/indToggleSlot 按配置填、插位喺圖上方）
 7. 管理頁：CRUD 經 widget、checkbox、跨頁同步、retranslate 三語
 8. shell 註冊：'indicators' in PAGE_KEYS/NAV_DIRECT
 9. ICT 區塊（ticket #20）：手砌 fixture 逐條斷言 OB/FVG/VOB 區塊起訖 + 過濾參數；隨機數據 → 主圖 fill_between
@@ -35,6 +36,7 @@ import gateway.state_store as state_store  # noqa: E402
 _TMPDIR = tempfile.mkdtemp()
 state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state.json'   # 🤖 hermetic：tmp state 檔
 
+from PySide6.QtCore import QMargins, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QCheckBox  # noqa: E402
 
 app = QApplication.instance() or QApplication([])  # noqa: E402
@@ -295,7 +297,25 @@ page.show()
 pump()
 chart2 = page._win.chart
 check('KlinePage：chart 已換成 IndicatorKlineChart', isinstance(chart2, ind.IndicatorKlineChart))
+# ── `.ui` 骨架（排版喺 gateway/ui/kline_page.ui；gui_kline 零改動 → 內容填進 embeddedSlot）──
+_central = chart2.parentWidget()
+_play = page.layout()
+check('`.ui` root objectName + Designer margin/spacing 照載入',
+      page.objectName() == 'kline_page' and _play is not None
+      and _play.contentsMargins() == QMargins(0, 0, 0, 0) and _play.spacing() == 0)
+check('嵌入嘅 gui_kline central widget 填進 `.ui` 嘅 embeddedSlot',
+      page.embeddedSlot.count() == 1 and page.embeddedSlot.itemAt(0).widget() is _central)
+check('ind_bar / ind_bar_lbl / indToggleSlot 由 `.ui` 建出（含 Designer margin），並被插進 K 線圖正上方',
+      page.ind_bar is not None and page.ind_bar_lbl is not None
+      and page.ind_bar.layout().contentsMargins() == QMargins(6, 2, 6, 0)
+      and _central.layout().indexOf(page.ind_bar) == _central.layout().indexOf(chart2) - 1)
 ids = [e['id'] for e in page._mgr.items()]
+check('開關掣按 IndicatorManager 配置填進 indToggleSlot（加指標唔使改 `.ui`）',
+      page.indToggleSlot.count() == len(page._ind_toggles) == len(ids)
+      and all(page.indToggleSlot.itemAt(i).widget() is b
+              for i, b in enumerate(page._ind_toggles.values())))
+check('WA_StyledBackground 由 _STAMP 補返 + 頁面級 QSS 以 objectName 為根',
+      page.testAttribute(Qt.WA_StyledBackground) and 'QWidget#ind_bar' in page.styleSheet())
 check('開關掣列 = 2 個（objectName ind_toggle_* + property og=indtoggle）',
       sorted(page._ind_toggles) == sorted(ids)
       and all(b.objectName().startswith('ind_toggle_') and b.property('og') == 'indtoggle'
@@ -322,7 +342,7 @@ page._mgr.update(macd3['id'], params={'fast': 5}, origin='ind_page')
 pump()
 check('管理頁改參數 → 掣 text 帶新參數', '5/26/9' in page._ind_toggles[macd3['id']].text())
 page.retranslate('en')
-check('K線頁 retranslate EN → 掣列標籤英文', 'Indicators' in page._ind_bar_lbl.text())
+check('K線頁 retranslate EN → 掣列標籤英文', 'Indicators' in page.ind_bar_lbl.text())
 page.retranslate('zh_hk')
 theme_mod.apply_theme('light')
 pump()
@@ -338,28 +358,54 @@ pump()
 print('── Part 7: 指標管理頁 ──')
 state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state4.json'
 ind.reset_manager_for_test()
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QMargins, Qt  # noqa: E402
+from PySide6.QtWidgets import QLabel  # noqa: E402
 from gateway.pages import indicators_page as ipage_mod  # noqa: E402
 from gateway.pages.indicators_page import IndicatorsPage  # noqa: E402
 
 ipage = IndicatorsPage()
 ipage.show()
 pump()
+
+# ── Part 7b：`.ui` 骨架（排版喺 gateway/ui/indicators_page.ui；控件數量屬資料 → 填進 slot）──
+lay = ipage.layout()
+check('`.ui` root objectName + Designer margin/spacing 照載入',
+      ipage.objectName() == 'indicators_page' and lay is not None
+      and lay.contentsMargins() == QMargins(10, 8, 10, 8) and lay.spacing() == 6)
+check('靜態控件全部由 `.ui` 建出（objectName 即身份契約）',
+      all(getattr(ipage, n, None) is not None for n in
+          ('ind_def_combo', 'ind_pos_combo', 'ind_add_btn', 'ind_save_btn', 'ind_remove_btn',
+           'ind_detail_toggle', 'ind_detail_panel', 'ind_detail_desc', 'ind_detail_usage',
+           'ind_detail_head', 'ind_table', 'ind_counts', 'ind_status',
+           'paramSlot', 'detailNoteSlot')))
+check('og / WA_StyledBackground 由 _STAMP 補返（Designer 帶唔住 dynamic property）',
+      ipage.ind_add_btn.property('og') == 'indbtn'
+      and ipage.ind_detail_panel.testAttribute(Qt.WA_StyledBackground))
+_d0 = ind.INDICATOR_DEFS[ipage._def_keys[ipage.ind_def_combo.currentIndex()]]
+check('參數列按 INDICATOR_DEFS 生成並填進 paramSlot（加指標唔使改 `.ui`）',
+      ipage.paramSlot.count() == 2 * len(_d0.params) + 1
+      and all(ipage.findChild(type(ipage._param_spins[p.key]), 'ind_param_%s' % p.key) is not None
+              for p in _d0.params))
+check('詳情解釋逐條填進 detailNoteSlot（objectName ind_detail_note_<key>）',
+      ipage.detailNoteSlot.count() == len(_d0.params)
+      and all(ipage.findChild(QLabel, 'ind_detail_note_%s' % p.key) is not None for p in _d0.params))
+check('頁面 QSS 有根（objectName → QSS cascade）', 'QWidget#indicators_page' in ipage.styleSheet())
+
 check('表格 = seed 2 行 + 三語表頭', ipage.model.rowCount() == 2
       and ipage.model.headerData(1, Qt.Horizontal) == '指標')
-ipage.def_combo.setCurrentIndex(ipage._def_keys.index('macd'))
+ipage.ind_def_combo.setCurrentIndex(ipage._def_keys.index('macd'))
 pump()
-check('揀 MACD → 位置 combo 得准入位置(sub)', ipage.pos_combo.currentData() == 'sub')
+check('揀 MACD → 位置 combo 得准入位置(sub)', ipage.ind_pos_combo.currentData() == 'sub')
 ipage._param_spins['fast'].setValue(5)
-ipage.add_btn.click()
+ipage.ind_add_btn.click()
 pump()
-check('新增 → 3 行 + status', ipage.model.rowCount() == 3 and '已新增' in ipage.status_lbl.text())
+check('新增 → 3 行 + status', ipage.model.rowCount() == 3 and '已新增' in ipage.ind_status.text())
 macd_id = next(e['id'] for e in ind.get_manager().items() if e['def'] == 'macd')
-ipage.table.selectRow(2)
+ipage.ind_table.selectRow(2)
 pump()
 check('揀行 → 編輯模式填入', ipage._sel_id == macd_id and ipage._param_spins['fast'].value() == 5)
 ipage._param_spins['fast'].setValue(8)
-ipage.save_btn.click()
+ipage.ind_save_btn.click()
 pump()
 check('套用修改 → params 更新', ind.get_manager().get(macd_id)['params']['fast'] == 8)
 ipage.model.setData(ipage.model.index(1, 0), Qt.Unchecked, Qt.CheckStateRole)
@@ -371,14 +417,14 @@ ind.get_manager().set_enabled(atr4, True, origin='kline_page')
 pump()
 check('K線頁端 enable → 管理頁表格即時打勾',
       ipage.model.data(ipage.model.index(1, 0), Qt.CheckStateRole) == Qt.Checked)
-ipage.table.selectRow(2)
+ipage.ind_table.selectRow(2)
 pump()
-ipage.remove_btn.click()
+ipage.ind_remove_btn.click()
 pump()
 check('移除所選 → 2 行', ipage.model.rowCount() == 2 and ind.get_manager().get(macd_id) is None)
 ipage.retranslate('en')
 pump()
-check('管理頁 retranslate EN', 'Add indicator' in ipage.add_btn.text()
+check('管理頁 retranslate EN', 'Add indicator' in ipage.ind_add_btn.text()
       and ipage.model.headerData(1, Qt.Horizontal) == 'Indicator')
 
 # ══ Part 8：shell 註冊 ════════════════════════════════════════════════════
@@ -533,16 +579,16 @@ ind.reset_manager_for_test()
 ipage9 = IndicatorsPage()
 ipage9.show()
 pump()
-labels = {ipage9.def_combo.itemText(i) for i in range(ipage9.def_combo.count())}
+labels = {ipage9.ind_def_combo.itemText(i) for i in range(ipage9.ind_def_combo.count())}
 check('管理頁 def combo 見到 OB / FVG / VOB', {'OB', 'FVG', 'VOB'} <= labels)
-ipage9.def_combo.setCurrentIndex(ipage9._def_keys.index('vob'))
+ipage9.ind_def_combo.setCurrentIndex(ipage9._def_keys.index('vob'))
 pump()
 check('揀 VOB → 位置只准 main + 參數欄砌到 8 個（含 sweep / max_size / pen / supersede）',
-      ipage9.pos_combo.count() == 1 and ipage9.pos_combo.currentData() == 'main'
+      ipage9.ind_pos_combo.count() == 1 and ipage9.ind_pos_combo.currentData() == 'main'
       and set(ipage9._param_spins) == {'period', 'strength', 'confirm', 'sweep',
                                        'max_size', 'pen', 'supersede', 'max_zones'})
 ipage9._param_spins['confirm'].setValue(5)
-ipage9.add_btn.click()
+ipage9.ind_add_btn.click()
 pump()
 _CI = {c: i for i, c in enumerate(ipage_mod.COLUMNS)}   # 🤖 永遠按欄名搵欄，唔 hardcode index
 check('新增 VOB → 表格 3 行 + 參數摘要 14/1/5/5/3/50/1/15（含 max_size/pen/supersede 預設）',
@@ -555,27 +601,27 @@ check('ICT 參數名三語（label + i18n）',
       _t('ind_p_confirm', 'en') == 'Confirm bars' and 'Confirm bars' in ipage9._param_lbls['confirm'].text())
 
 # #28：MA 逐條線 CHECKBOX（is_bool → 管理頁出 checkbox；摘要 skip bool）
-ipage9.def_combo.setCurrentIndex(ipage9._def_keys.index('ma'))
+ipage9.ind_def_combo.setCurrentIndex(ipage9._def_keys.index('ma'))
 pump()
 check('#28 揀 MA → 參數欄 p1..4 spin + show1..4 CHECKBOX（預設全剔）',
       set(ipage9._param_spins) == {'p1', 'p2', 'p3', 'p4', 'show1', 'show2', 'show3', 'show4'}
       and all(isinstance(ipage9._param_spins['show%d' % n], QCheckBox)
               and ipage9._param_spins['show%d' % n].isChecked() for n in (1, 2, 3, 4)))
 ipage9._param_spins['show2'].setChecked(False)
-ipage9.add_btn.click()
+ipage9.ind_add_btn.click()
 pump()
 ma9 = next(e for e in ipage9._mgr().items() if e['def'] == 'ma')
 check('#28 新增 MA（MA2 唔剔）→ show2=0 入 manager、其他照 1',
       ipage9.model.rowCount() == 4 and ma9['params']['show2'] == 0 and ma9['params']['show1'] == 1)
 check('#28 參數摘要 skip bool：照舊「5/10/20/60」',
       ipage9.model.data(ipage9.model.index(3, _CI['params'])) == '5/10/20/60')
-ipage9.table.selectRow(3)
+ipage9.ind_table.selectRow(3)
 pump()
 check('#28 揀行 → CHECKBOX 反映返存嘅狀態（show2 冇剔）',
       ipage9._sel_id == ma9['id'] and not ipage9._param_spins['show2'].isChecked()
       and ipage9._param_spins['show1'].isChecked())
 ipage9._param_spins['show2'].setChecked(True)
-ipage9.save_btn.click()
+ipage9.ind_save_btn.click()
 pump()
 check('#28 剔返再套用 → params.show2=1', ipage9._mgr().get(ma9['id'])['params']['show2'] == 1)
 
@@ -656,9 +702,9 @@ pump()
 check('表格多咗「說明」欄（表頭三語 + 欄數 = COLUMNS）',
       ip10.model.columnCount() == len(ipage_mod.COLUMNS)
       and ip10.model.headerData(ipage_mod.COLUMNS.index('desc'), Qt.Horizontal) == '說明')
-ip10.def_combo.setCurrentIndex(ip10._def_keys.index('bos'))
+ip10.ind_def_combo.setCurrentIndex(ip10._def_keys.index('bos'))
 pump()
-ip10.add_btn.click()
+ip10.ind_add_btn.click()
 pump()
 di = ipage_mod.COLUMNS.index('desc')
 row_b = next(i for i in range(ip10.model.rowCount())
@@ -666,32 +712,34 @@ row_b = next(i for i in range(ip10.model.rowCount())
 check('新增 BOS → 說明欄有一行描寫（跟語言）+ tooltip 帶完整用法',
       ip10.model.data(ip10.model.index(row_b, di)) == _t('ind_desc_bos', 'zh_hk')
       and _t('ind_use_bos', 'zh_hk') in (ip10.model.data(ip10.model.index(row_b, di), Qt.ToolTipRole) or ''))
-check('詳情面板預設收起', not ip10.detail_panel.isVisible() and '▸' in ip10.detail_btn.text())
-ip10.detail_btn.click()
+check('詳情面板預設收起', not ip10.ind_detail_panel.isVisible() and '▸' in ip10.ind_detail_toggle.text())
+ip10.ind_detail_toggle.click()
 pump()
 check('展開 → 顯示完整用法 + 每個參數一行解釋（ind_detail_note_<key>）',
-      ip10.detail_panel.isVisible()
-      and _t('ind_use_bos', 'zh_hk') in ip10.detail_usage.text()
+      ip10.ind_detail_panel.isVisible()
+      and _t('ind_use_bos', 'zh_hk') in ip10.ind_detail_usage.text()
       and set(ip10._detail_notes) == {'swing', 'max_levels'}
       and ip10._detail_notes['swing'].text() == '· %s：%s' % (_t('ind_p_swing', 'zh_hk'),
                                                               _t('ind_n_swing', 'zh_hk')))
-ip10.detail_btn.click()
+ip10.ind_detail_toggle.click()
 pump()
-check('再撳 → 收起（只返返一行掣）', not ip10.detail_panel.isVisible() and '▸' in ip10.detail_btn.text())
-ip10.def_combo.setCurrentIndex(ip10._def_keys.index('ote'))
+check('再撳 → 收起（只返返一行掣）', not ip10.ind_detail_panel.isVisible() and '▸' in ip10.ind_detail_toggle.text())
+ip10.ind_def_combo.setCurrentIndex(ip10._def_keys.index('ote'))
 pump()
 check('轉類型 → 詳情即時跟（OTE 帶 fib_lo/fib_hi 解釋）',
       set(ip10._detail_notes) == {'swing', 'fib_lo', 'fib_hi', 'max_zones'}
-      and _t('ind_desc_ote', 'zh_hk') in ip10.detail_desc.text())
-ip10.detail_btn.click()
+      and _t('ind_desc_ote', 'zh_hk') in ip10.ind_detail_desc.text())
+ip10.ind_detail_toggle.click()
 pump()
 ip10.retranslate('en')
 pump()
 check('三語：表頭/說明欄跟語言 + 詳情跟頂欄類型（而家 = OTE）嘅英文用法/參數解釋',
       ip10.model.headerData(di, Qt.Horizontal) == 'Description'
       and ip10.model.data(ip10.model.index(row_b, di)) == _t('ind_desc_bos', 'en')
-      and _t('ind_use_ote', 'en') in ip10.detail_usage.text()
-      and _t('ind_n_swing', 'en') in ip10._detail_notes['swing'].text())
+      and _t('ind_use_ote', 'en') in ip10.ind_detail_usage.text()
+      and _t('ind_n_swing', 'en') in ip10._detail_notes['swing'].text()
+      # 詳情標題係純固定文案 → 由 `_TEXT` 表 cover（`_rebuild_detail` 已冇手寫 setText）
+      and ip10.ind_detail_head.text() == _t('ind_detail_params', 'en'))
 check('K線頁開關掣 tooltip 帶一行描寫（三語）',
       _t('ind_desc_ob', 'en') in KlinePage._ind_tooltip(ind.INDICATOR_DEFS['ob'], 'main', 'en')
       and _t('ind_pos_main', 'zh_cn') in KlinePage._ind_tooltip(ind.INDICATOR_DEFS['ob'], 'main', 'zh_cn'))

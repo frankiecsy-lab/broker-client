@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SymbolListPage</class>
+ <widget class="QWidget" name="symbol_list_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 頂欄：模糊搜尋 + 一鍵更新。placeholder／掣文字屬語言 → 由 symbol_list_page.py retranslate 填 -->
+   <item>
+    <layout class="QHBoxLayout" name="searchRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLineEdit" name="sl_search">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="sl_update_btn">
+       <property name="text"><string>↻ 更新市場數據</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- FILTER 兩組（市場 × 種類，各組 exclusive）＝ 純資料（MARKETS / TYPES registry）
+        → 由 symbol_list_page.py 嘅 _mk_group 逐個掣填進 filterSlot（objectName sl_f_<key>）；
+        加市場／種類唔使改呢檔 -->
+   <item>
+    <layout class="QHBoxLayout" name="filterSlot">
+     <property name="spacing"><number>3</number></property>
+    </layout>
+   </item>
+   <!-- 面包屑（flat 模式隱藏）：◀ 返回 + 路徑。路徑文字屬資料 → 由 _update_nav 填 -->
+   <item>
+    <layout class="QHBoxLayout" name="navRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QPushButton" name="sl_back_btn">
+       <property name="text"><string>◀ 返回</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="sl_crumb">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableView" name="sl_table">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomRow">
+     <item>
+      <widget class="QLabel" name="sl_counts">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="bottomStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="sl_status">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

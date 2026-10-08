@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PopupPageWindow</class>
+ <!-- 彈出視窗（app.py `_PopupPageWindow`）：由 page_stack 搬出嘅 page 獨佔一個窗。
+      root objectName 必須係 `oneGateRoot` — theme.py 嘅 shell 背景 selector 靠呢個名
+      （同主外殼 app_shell.ui 同一個 scope）。窗內容只有 page 本身 → 一個 0 margin 空 slot。 -->
+ <widget class="QWidget" name="oneGateRoot">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="leftMargin"><number>0</number></property>
+   <property name="topMargin"><number>0</number></property>
+   <property name="rightMargin"><number>0</number></property>
+   <property name="bottomMargin"><number>0</number></property>
+   <property name="spacing"><number>0</number></property>
+   <item>
+    <!-- page 由 stack reparent 進嚟（同一實例，唔複製） -->
+    <layout class="QVBoxLayout" name="pageSlot"/>
+   </item>
+  </layout>
+ </widget>
+</ui>

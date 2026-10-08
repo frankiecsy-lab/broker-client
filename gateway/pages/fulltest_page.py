@@ -11,6 +11,8 @@
   string.Template QSS（palette 值由 gateway.theme.THEMES 注入）+ 運行時重新指派
   `gf.STATE_STYLE` 嘅 QColor（`_apply_state` 係 paint-time 讀 → 改完即刻生效）。
   light 用原檔色值（本身為淺底設計，保證清晰可讀），dark 用提亮變體。
+- **排版**：`gateway/ui/fulltest_page.ui`（Designer 可調）；呢頁冇自己嘅控件，只有一個 `embedSlot`
+  空位，由本檔填進 `gui_fulltest` 嘅 central widget → 以後加頂欄/狀態列改 `.ui` 就得。
 
 單獨運行：`python gateway/pages/fulltest_page.py`（standalone window，帶語言/theme 控制）。
 """
@@ -23,12 +25,16 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
-from PySide6.QtWidgets import QApplication, QTableWidget, QVBoxLayout, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from gateway.pages import gui_fulltest as gf  # noqa: E402 — 同目錄 app 組件（本檔對佢零改動）
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
+from gateway.ui.bind import stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
+
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住；見 gateway/ui/bind.py）
+_STAMP = {'fulltest_page': {}}   # bare QWidget 要 WA_StyledBackground 先食到頁面級背景 QSS
 
 # ── 結果狀態色：light = gui_fulltest 原值（淺底設計），dark = 提亮變體（深底可讀）──
 _STATE_COLORS = {
@@ -77,14 +83,12 @@ class FulltestPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName('fulltest_page')
-        self.setAttribute(Qt.WA_StyledBackground, True)   # bare QWidget 要呢個先會畫頁面級 QSS background
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
+        apply_ui(self, 'fulltest_page')     # 排版喺 .ui（零 margin + 一個 embedSlot）
+        stamp(self, _STAMP)
 
         # ── 嵌入 gui_fulltest.MainWindow（隱藏 top-level；保留引用 alive 俾 thread lifecycle）──
         self._win = gf.MainWindow()          # 唔 show — 只係 take 佢嘅 central widget
-        v.addWidget(self._win.takeCentralWidget(), 1)
+        self.embedSlot.addWidget(self._win.takeCentralWidget())
 
         self._quit_done = False
         app = QApplication.instance()

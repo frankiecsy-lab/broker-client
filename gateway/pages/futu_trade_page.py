@@ -31,8 +31,11 @@
   gRPC 調用係 blocking 唔好 block UI；ctx 非 thread-safe → 全部 op 同一條 thread）。
   futu SDK lazy import（import 要幾秒，唔拖慢 UI 啟動）— 同 connection_page probe 同一 pattern。
 
-Theme 傳播：頁面級 QSS template（palette 由 gateway.theme.THEMES 注入，經 listener registry
-跟隨外殼切換）— 同 connection_page 同一 pattern。
+- **排版**：`gateway/ui/futu_trade_page.ui`（Designer 可調 margin / 兩欄 3:2 比例 / card 間距 /
+  欄位格位）。欄位比例用 sizePolicy `horstretch`/`verstretch`（= Designer「Layout Stretch」，
+  `.ui` 嘅 `<item>` 唔帶 stretch 屬性）。表格欄數、市場/訂單類型/TIF 選項、帳戶/訂單/持倉行
+  全部屬資料 → code 填；`og`/`role` 由本頁 `_STAMP` 喺 load 後注入（Designer 帶唔住自訂 property）。
+- **Theme/i18n**：照其他頁 recipe（頁面級 QSS template + `_STAMP`/`_TEXT` table-driven retranslate）。
 
 單獨運行：`python gateway/pages/futu_trade_page.py`（standalone window，帶語言/theme 控制）。
 """
@@ -51,14 +54,14 @@ if _ROOT not in sys.path:
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QApplication, QButtonGroup, QHeaderView, QMessageBox, QTableWidget, QTableWidgetItem, QWidget,
 )
 
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 from gateway.symbol_input import FuzzyCompleter, apply_item, display_name  # noqa: E402 — 全域模糊輸入
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 # config.json 路徑 — pathlib 跨平台（AGENTS.md：禁 hardcode 斜線）
 CONFIG_PATH = Path(__file__).resolve().parents[2] / 'modules' / 'config.json'
@@ -542,6 +545,45 @@ QHeaderView::section {
 ''')
 
 
+# `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住自訂 dynamic property）+ 文字來源
+# （objectName == page 入面嘅 Python 屬性名，見 gateway/ui/bind.py 契約）
+_STAMP = {
+    'futu_trade_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
+    'header_card': {'og': 'pagecard'}, 'orders_card': {'og': 'pagecard'},
+    'pos_card': {'og': 'pagecard'}, 'conn_card': {'og': 'pagecard'},
+    'order_card': {'og': 'pagecard'},
+    'title_lbl': {'role': 'pagetitle'}, 'body_lbl': {'role': 'pagebody'},
+    'orders_title_lbl': {'role': 'sectitle'}, 'pos_title_lbl': {'role': 'sectitle'},
+    'conn_title_lbl': {'role': 'sectitle'}, 'order_title_lbl': {'role': 'sectitle'},
+    'host_lbl': {'role': 'formlabel'}, 'port_lbl': {'role': 'formlabel'},
+    'market_lbl': {'role': 'formlabel'}, 'code_lbl': {'role': 'formlabel'},
+    'otype_lbl': {'role': 'formlabel'}, 'price_lbl': {'role': 'formlabel'},
+    'qty_lbl': {'role': 'formlabel'}, 'tif_lbl': {'role': 'formlabel'},
+    'code_hint_lbl': {'role': 'formlabel'},
+    'orders_status_lbl': {'role': 'result'}, 'accinfo_lbl': {'role': 'result'},
+    'conn_status_lbl': {'role': 'result'}, 'acc_sel_lbl': {'role': 'result'},
+    'unlock_status_lbl': {'role': 'result'}, 'order_result_lbl': {'role': 'result'},
+    'orders_refresh_btn': {'og': 'actionbtn'}, 'cancel_sel_btn': {'og': 'actionbtn'},
+    'cancel_all_btn': {'og': 'actionbtn'}, 'pos_refresh_btn': {'og': 'actionbtn'},
+    'env_sim_btn': {'og': 'envbtn'}, 'env_real_btn': {'og': 'envbtn'},
+    'buy_btn': {'og': 'buybtn'}, 'sell_btn': {'og': 'sellbtn'},
+}
+
+# 純 i18n 文字（狀態驅動嘅 label — orders_status / accinfo / conn_status / acc_sel /
+# unlock_status / order_result / code_hint — 唔入表，由各自 handler 如實生成）
+_TEXT = {
+    'title_lbl': 'page_futu_trade_title', 'body_lbl': 'page_futu_trade_body',
+    'conn_title_lbl': 'trade_conn_title', 'host_lbl': 'conn_host', 'port_lbl': 'conn_port',
+    'market_lbl': 'trade_market', 'env_sim_btn': 'trade_env_sim', 'env_real_btn': 'trade_env_real',
+    'order_title_lbl': 'trade_order_title', 'code_lbl': 'trade_code', 'otype_lbl': 'trade_otype',
+    'price_lbl': 'trade_price', 'qty_lbl': 'trade_qty', 'tif_lbl': 'trade_tif',
+    'buy_btn': 'trade_buy_btn', 'sell_btn': 'trade_sell_btn',
+    'orders_title_lbl': 'trade_orders_title', 'orders_refresh_btn': 'trade_refresh',
+    'cancel_sel_btn': 'trade_cancel_sel', 'cancel_all_btn': 'trade_cancel_all',
+    'pos_title_lbl': 'trade_pos_title', 'pos_refresh_btn': 'trade_refresh',
+}
+
+
 class FutuTradePage(QWidget):
     """FUTU 交易頁 — 兩欄佈局：左 = 今日訂單 + 持倉資金；右 = 連線帳戶（SIM/REAL 切換）+ 下單。
 
@@ -559,267 +601,35 @@ class FutuTradePage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName('futu_trade_page')
-        self.setAttribute(Qt.WA_StyledBackground, True)   # bare QWidget 要呢個先會畫頁面級 QSS background
-        v = QVBoxLayout(self)
-        v.setContentsMargins(24, 24, 24, 24)
+        # 排版全部喺 gateway/ui/futu_trade_page.ui（Designer 可調 margin / 欄位比例 / card 間距）；
+        # 呢度剩低嘅全部係「行為 + 資料」：QSS property、表格欄配置、combo item、completer、signal。
+        apply_ui(self, 'futu_trade_page')
+        stamp(self, _STAMP)   # 注入 og/role + WA_StyledBackground（頁面 root 同各 card 一併補返）
 
-        # ── Header card（標題 + 說明；pagetitle/pagebody 由 app-level [og="pagecard"] 規則 style）──
-        header = self._make_card()
-        hv = QVBoxLayout(header)
-        hv.setContentsMargins(32, 24, 32, 24)
-        self.title_lbl = QLabel()
-        self.title_lbl.setProperty('role', 'pagetitle')
-        self.body_lbl = QLabel()
-        self.body_lbl.setProperty('role', 'pagebody')
-        self.body_lbl.setWordWrap(True)
-        hv.addWidget(self.title_lbl)
-        hv.addSpacing(10)
-        hv.addWidget(self.body_lbl)
-        v.addWidget(header)
+        # 表格欄數 = 資料（ACC_COLS / ORDER_COLS / POS_COLS）；位置同 acc_table 高度上限喺 .ui
+        for tb, cols in ((self.acc_table, ACC_COLS), (self.orders_table, ORDER_COLS),
+                         (self.pos_table, POS_COLS)):
+            self._config_table(tb, cols)
 
-        # ── 兩欄主區：左 = 訂單 + 持倉 / 右 = 連線帳戶 + 下單（stretch 填剩餘高度）──
-        cols = QHBoxLayout()
-        cols.setSpacing(16)
+        # 市場過濾 / 訂單類型 / TIF 選項 = 技術識別碼（三語同字）→ item 由 code 填
+        self.market_combo.addItems(MARKET_FILTERS)
+        self.otype_combo.addItems(ORDER_TYPES)
+        for _tif in TIF_OPTIONS:   # 顯示三語（tif_* i18n）；userData = enum 名 — 提交用 currentData
+            self.tif_combo.addItem(t(f'tif_{_tif}', DEFAULT_LANG), _tif)
 
-        # ══ 左欄 — 今日訂單 card（stretch）══
-        left_col = QVBoxLayout()
-        left_col.setSpacing(16)
-
-        orders_card = self._make_card()
-        wv = QVBoxLayout(orders_card)
-        wv.setContentsMargins(32, 24, 32, 24)
-        self.orders_title_lbl = QLabel()
-        self.orders_title_lbl.setProperty('role', 'sectitle')
-        wv.addWidget(self.orders_title_lbl)
-        wv.addSpacing(12)
-
-        row3 = QHBoxLayout()
-        self.orders_refresh_btn = QPushButton(t('trade_refresh', DEFAULT_LANG))
-        self.orders_refresh_btn.setObjectName('trade_orders_refresh_btn')
-        self.orders_refresh_btn.setProperty('og', 'actionbtn')
-        self.cancel_sel_btn = QPushButton(t('trade_cancel_sel', DEFAULT_LANG))
-        self.cancel_sel_btn.setObjectName('trade_cancel_sel_btn')
-        self.cancel_sel_btn.setProperty('og', 'actionbtn')
-        self.cancel_all_btn = QPushButton(t('trade_cancel_all', DEFAULT_LANG))
-        self.cancel_all_btn.setObjectName('trade_cancel_all_btn')
-        self.cancel_all_btn.setProperty('og', 'actionbtn')
-        row3.addWidget(self.orders_refresh_btn)
-        row3.addSpacing(8)
-        row3.addWidget(self.cancel_sel_btn)
-        row3.addSpacing(8)
-        row3.addWidget(self.cancel_all_btn)
-        row3.addStretch(1)
-        wv.addLayout(row3)
-        wv.addSpacing(8)
-
-        self.orders_status_lbl = QLabel('')
-        self.orders_status_lbl.setObjectName('trade_orders_status')
-        self.orders_status_lbl.setProperty('role', 'result')
-        self.orders_status_lbl.setWordWrap(True)
-        wv.addWidget(self.orders_status_lbl)
-        wv.addSpacing(8)
-
-        self.orders_table = self._make_table('trade_orders_table', ORDER_COLS)
-        wv.addWidget(self.orders_table, 1)
-        left_col.addWidget(orders_card, 3)
-
-        # ══ 左欄 — 持倉同帳戶資金 card（stretch）══
-        pos_card = self._make_card()
-        pv = QVBoxLayout(pos_card)
-        pv.setContentsMargins(32, 24, 32, 24)
-        self.pos_title_lbl = QLabel()
-        self.pos_title_lbl.setProperty('role', 'sectitle')
-        pv.addWidget(self.pos_title_lbl)
-        pv.addSpacing(12)
-
-        row4 = QHBoxLayout()
-        self.pos_refresh_btn = QPushButton(t('trade_refresh', DEFAULT_LANG))
-        self.pos_refresh_btn.setObjectName('trade_pos_refresh_btn')
-        self.pos_refresh_btn.setProperty('og', 'actionbtn')
-        row4.addWidget(self.pos_refresh_btn)
-        row4.addStretch(1)
-        pv.addLayout(row4)
-        pv.addSpacing(8)
-
-        self.accinfo_lbl = QLabel('')
-        self.accinfo_lbl.setObjectName('trade_accinfo')
-        self.accinfo_lbl.setProperty('role', 'result')
-        self.accinfo_lbl.setWordWrap(True)
-        pv.addWidget(self.accinfo_lbl)
-        pv.addSpacing(8)
-
-        self.pos_table = self._make_table('trade_pos_table', POS_COLS)
-        pv.addWidget(self.pos_table, 1)
-        left_col.addWidget(pos_card, 2)
-
-        # ══ 右欄 — 連線同帳戶 card ══
-        right_col = QVBoxLayout()
-        right_col.setSpacing(16)
-
-        conn_card = self._make_card()
-        cv = QVBoxLayout(conn_card)
-        cv.setContentsMargins(32, 24, 32, 24)
-        self.conn_title_lbl = QLabel()
-        self.conn_title_lbl.setProperty('role', 'sectitle')
-        cv.addWidget(self.conn_title_lbl)
-        cv.addSpacing(12)
-
-        row1 = QHBoxLayout()
-        self.host_lbl = self._form_label('conn_host')
-        self.host_edit = QLineEdit()
-        self.host_edit.setObjectName('trade_host')
-        self.port_lbl = self._form_label('conn_port')
-        self.port_edit = QLineEdit()
-        self.port_edit.setObjectName('trade_port')
-        row1.addWidget(self.host_lbl)
-        row1.addWidget(self.host_edit, 2)
-        row1.addSpacing(8)
-        row1.addWidget(self.port_lbl)
-        row1.addWidget(self.port_edit, 1)
-        cv.addLayout(row1)
-        cv.addSpacing(8)
-
-        # 🤖 連線/斷開按鈕已刪（用戶要求：默認自動連線）— 連線狀態只喺 conn_status_lbl 如實反映
-        cv.addSpacing(10)
-
-        self.conn_status_lbl = QLabel('')
-        self.conn_status_lbl.setObjectName('trade_conn_status')
-        self.conn_status_lbl.setProperty('role', 'result')
-        self.conn_status_lbl.setWordWrap(True)
-        cv.addWidget(self.conn_status_lbl)
-        cv.addSpacing(8)
-
-        # 環境切換（SIM/REAL exclusive，預設模擬 — 安全邊）+ 市場過濾（帳戶表雙重 client-side filter）
-        row_env = QHBoxLayout()
-        self.env_sim_btn = QPushButton(t('trade_env_sim', DEFAULT_LANG))
-        self.env_sim_btn.setObjectName('trade_env_sim_btn')
-        self.env_sim_btn.setProperty('og', 'envbtn')
-        self.env_sim_btn.setCheckable(True)
-        self.env_real_btn = QPushButton(t('trade_env_real', DEFAULT_LANG))
-        self.env_real_btn.setObjectName('trade_env_real_btn')
-        self.env_real_btn.setProperty('og', 'envbtn')
-        self.env_real_btn.setCheckable(True)
+        # 環境切換 exclusive toggle — QButtonGroup 冇實體、入唔到 .ui → 喺呢度組。
+        # 預設 SIM 已由 .ui（checked=true）set，喺 connect signal 之前，唔會觸發 filter logic
         self._env_group = QButtonGroup(self)
         self._env_group.setExclusive(True)
         self._env_group.addButton(self.env_sim_btn)
         self._env_group.addButton(self.env_real_btn)
-        self.env_sim_btn.setChecked(True)   # 喺 connect signal 之前 set — 避免建檔時觸發 filter logic
-        row_env.addWidget(self.env_sim_btn, 1)
-        row_env.addSpacing(8)
-        row_env.addWidget(self.env_real_btn, 1)
-        row_env.addSpacing(12)
-        self.market_lbl = self._form_label('trade_market')
-        self.market_combo = QComboBox()
-        self.market_combo.setObjectName('trade_market')
-        self.market_combo.addItems(MARKET_FILTERS)
-        row_env.addWidget(self.market_lbl)
-        row_env.addWidget(self.market_combo, 1)
-        cv.addLayout(row_env)
-        cv.addSpacing(8)
 
-        self.acc_table = self._make_table('trade_acc_table', ACC_COLS)
-        self.acc_table.setMaximumHeight(160)
-        cv.addWidget(self.acc_table, 1)
-        cv.addSpacing(8)
-
-        self.acc_sel_lbl = QLabel()
-        self.acc_sel_lbl.setObjectName('trade_acc_selected')
-        self.acc_sel_lbl.setProperty('role', 'result')
-        cv.addWidget(self.acc_sel_lbl)
-        cv.addSpacing(8)
-
-        right_col.addWidget(conn_card)
-
-        # ══ 右欄 — 下單 card（買入/賣出兩鍵；方向由按鍵決定）══
-        order_card = self._make_card()
-        ov = QVBoxLayout(order_card)
-        ov.setContentsMargins(32, 24, 32, 24)
-        self.order_title_lbl = QLabel()
-        self.order_title_lbl.setProperty('role', 'sectitle')
-        ov.addWidget(self.order_title_lbl)
-        ov.addSpacing(12)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(8)
-        self.code_lbl = self._form_label('trade_code')
-        self.code_edit = QLineEdit()
-        self.code_edit.setObjectName('trade_code')
         # 🤖 模糊輸入：completer 一律經 gateway/symbol_input；搜尋來源係 worker stock_search（異步 → set_hits）
         self.code_completer = FuzzyCompleter(parent=self)
         self.code_edit.setCompleter(self.code_completer)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(300)   # debounce — 打完先 query，唔係每按一次
-        self.code_hint_lbl = QLabel('')
-        self.code_hint_lbl.setObjectName('trade_code_hint')
-        self.code_hint_lbl.setProperty('role', 'formlabel')
-        code_cell = QWidget()
-        ccv = QVBoxLayout(code_cell)
-        ccv.setContentsMargins(0, 0, 0, 0)
-        ccv.addWidget(self.code_edit)
-        ccv.addWidget(self.code_hint_lbl)
-        self.otype_lbl = self._form_label('trade_otype')
-        self.otype_combo = QComboBox()
-        self.otype_combo.setObjectName('trade_otype')
-        self.otype_combo.addItems(ORDER_TYPES)
-        self.price_lbl = self._form_label('trade_price')
-        self.price_edit = QLineEdit()
-        self.price_edit.setObjectName('trade_price')
-        self.qty_lbl = self._form_label('trade_qty')
-        self.qty_edit = QLineEdit()
-        self.qty_edit.setObjectName('trade_qty')
-        self.tif_lbl = self._form_label('trade_tif')
-        self.tif_combo = QComboBox()
-        self.tif_combo.setObjectName('trade_tif')
-        for _tif in TIF_OPTIONS:   # 顯示三語（tif_* i18n）；userData = enum 名 — 提交用 currentData
-            self.tif_combo.addItem(t(f'tif_{_tif}', DEFAULT_LANG), _tif)
-        grid.addWidget(self.code_lbl, 0, 0)
-        grid.addWidget(code_cell, 0, 1, 1, 3)
-        grid.addWidget(self.otype_lbl, 1, 0)
-        grid.addWidget(self.otype_combo, 1, 1)
-        grid.addWidget(self.price_lbl, 1, 2)
-        grid.addWidget(self.price_edit, 1, 3)
-        grid.addWidget(self.qty_lbl, 2, 0)
-        grid.addWidget(self.qty_edit, 2, 1)
-        grid.addWidget(self.tif_lbl, 2, 2)
-        grid.addWidget(self.tif_combo, 2, 3)
-        ov.addLayout(grid)
-        ov.addSpacing(6)
-
-        # 解鎖狀態（只實盤顯示）— 新版 OpenD 只容許 GUI 解鎖；狀態由落單/撤單成敗被動推斷
-        self.unlock_status_lbl = QLabel('')
-        self.unlock_status_lbl.setObjectName('trade_unlock_status')
-        self.unlock_status_lbl.setProperty('role', 'result')
-        self.unlock_status_lbl.setWordWrap(True)
-        ov.addWidget(self.unlock_status_lbl)
-        ov.addSpacing(4)
-
-        row2 = QHBoxLayout()
-        self.buy_btn = QPushButton(t('trade_buy_btn', DEFAULT_LANG))
-        self.buy_btn.setObjectName('trade_buy_btn')
-        self.buy_btn.setProperty('og', 'buybtn')
-        self.sell_btn = QPushButton(t('trade_sell_btn', DEFAULT_LANG))
-        self.sell_btn.setObjectName('trade_sell_btn')
-        self.sell_btn.setProperty('og', 'sellbtn')
-        row2.addWidget(self.buy_btn, 1)
-        row2.addSpacing(8)
-        row2.addWidget(self.sell_btn, 1)
-        ov.addLayout(row2)
-        ov.addSpacing(10)
-
-        self.order_result_lbl = QLabel('')
-        self.order_result_lbl.setObjectName('trade_order_result')
-        self.order_result_lbl.setProperty('role', 'result')
-        self.order_result_lbl.setWordWrap(True)
-        ov.addWidget(self.order_result_lbl)
-        right_col.addWidget(order_card)
-        right_col.addStretch(1)
-
-        cols.addLayout(left_col, 3)
-        cols.addLayout(right_col, 2)
-        v.addLayout(cols, 1)
 
         # ── state ──
         self._lang = DEFAULT_LANG
@@ -888,25 +698,11 @@ class FutuTradePage(QWidget):
         self._retry_timer.start(AUTO_CONNECT_DELAY_MS)
         self.retranslate(DEFAULT_LANG)
 
-    # ── 建檔 helpers ─────────────────────────────────────────────
+    # ── 行為 helpers（排版喺 .ui；呢度只 configure 喺 Designer 入面講唔清楚嘅行為）──
     @staticmethod
-    def _make_card():
-        card = QWidget()
-        card.setProperty('og', 'pagecard')
-        card.setAttribute(Qt.WA_StyledBackground, True)
-        return card
-
-    @staticmethod
-    def _form_label(key):
-        lbl = QLabel(t(key, DEFAULT_LANG))
-        lbl.setProperty('role', 'formlabel')
-        return lbl
-
-    @staticmethod
-    def _make_table(name, cols):
-        tb = QTableWidget(0, len(cols))
-        tb.setObjectName(name)
-        tb.setHorizontalHeaderLabels(list(cols))
+    def _config_table(tb, cols):
+        """欄數 = 資料（cols 長度）；唯讀 / 揀整行 / 欄自動闊 / 行高 = 行為契約。"""
+        tb.setColumnCount(len(cols))
         tb.verticalHeader().setVisible(False)
         tb.setEditTriggers(QTableWidget.NoEditTriggers)
         tb.setSelectionBehavior(QTableWidget.SelectRows)
@@ -914,7 +710,6 @@ class FutuTradePage(QWidget):
         tb.setAlternatingRowColors(True)
         tb.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tb.verticalHeader().setDefaultSectionSize(26)   # 行高一致、唔擠
-        return tb
 
     def _load_config_defaults(self):
         """host/port 預填 config.json futu section（唔寫返 — connection_page 負責 save）。"""
@@ -1402,20 +1197,8 @@ class FutuTradePage(QWidget):
         """外殼 / standalone window 語言切換時調用 — 全部文字跟隨（form 值/表格數據唔變）。"""
         self._lang = lang
         self.code_completer.lang = lang   # 🤖 dropdown 名稱跟語言（symbol_input / display_for 同一把尺）
-        self.title_lbl.setText(t('page_futu_trade_title', lang))
-        self.body_lbl.setText(t('page_futu_trade_body', lang))
-        self.conn_title_lbl.setText(t('trade_conn_title', lang))
-        # Host/Port 三語同字 — 建檔時已 set，唔使重設
-        self.market_lbl.setText(t('trade_market', lang))
-        self.env_sim_btn.setText(t('trade_env_sim', lang))
-        self.env_real_btn.setText(t('trade_env_real', lang))
+        apply_text(self, _TEXT, lang)     # 靜態文字（表單標籤 / 按鍵 / 分區標題）
         self._set_unlock_state(self._unlock_state)   # 狀態欄按當前狀態重新翻譯
-        self.order_title_lbl.setText(t('trade_order_title', lang))
-        self.code_lbl.setText(t('trade_code', lang))
-        self.otype_lbl.setText(t('trade_otype', lang))
-        self.price_lbl.setText(t('trade_price', lang))
-        self.qty_lbl.setText(t('trade_qty', lang))
-        self.tif_lbl.setText(t('trade_tif', lang))
         cur_tif = self.tif_combo.currentData() or 'DAY'   # TIF 選項重建（三語顯示，保留選中 enum）
         self.tif_combo.blockSignals(True)
         self.tif_combo.clear()
@@ -1423,14 +1206,6 @@ class FutuTradePage(QWidget):
             self.tif_combo.addItem(t(f'tif_{_tif}', lang), _tif)
         self.tif_combo.setCurrentIndex(max(0, self.tif_combo.findData(cur_tif)))
         self.tif_combo.blockSignals(False)
-        self.buy_btn.setText(t('trade_buy_btn', lang))
-        self.sell_btn.setText(t('trade_sell_btn', lang))
-        self.orders_title_lbl.setText(t('trade_orders_title', lang))
-        self.orders_refresh_btn.setText(t('trade_refresh', lang))
-        self.cancel_sel_btn.setText(t('trade_cancel_sel', lang))
-        self.cancel_all_btn.setText(t('trade_cancel_all', lang))
-        self.pos_title_lbl.setText(t('trade_pos_title', lang))
-        self.pos_refresh_btn.setText(t('trade_refresh', lang))
         # 動態 label（acc_sel / status）跟住重譯一次；表格欄名即時換（數據唔使重填）；hint 跟語言
         if self._acc:
             self._on_acc_selected()

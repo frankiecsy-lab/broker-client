@@ -4,7 +4,9 @@ Check: maximized / 八欄 table shape（參數拆多欄）/ 無輸入欄位 / ob
        單行經真 BrokerClient 跑到 ✅ PASS / 成功行「▸ 數據」拆疊展開+收埋 /
        誠實失敗行 ⚠️ EXPECTED FAIL / **3 rows 同時並發**全部完成且正確 /
        Run All 按鈕 wiring（monkeypatch enqueue）/ Stop 清理所有結果（包括運行中嘅行）/ closeEvent 釋放 thread /
-       🤖 默認隱藏 EXPECTED FAIL + 按鈕狀態機（idle → Stop 灰；運行中 → Run All 灰、該行 ▶ 灰）。
+       🤖 默認隱藏 EXPECTED FAIL + 按鈕狀態機（idle → Stop 灰；運行中 → Run All 灰、該行 ▶ 灰）/
+       🤖 FulltestPage：`.ui` 骨架（root objectName + 零 margin + embedSlot）→ takeCentralWidget 成個
+          UI 嵌入頁下面 → 頁面級 QSS 有根 → aboutToQuit 清理鏈照樣收工。
 前置：OpenD 開緊（IB 唔使 — 呢個 E2E 只跑 futu rows）。
 Run: python .scratch/e2e_gui_fulltest.py   (exit 0=PASS / 1=FAIL)
 
@@ -18,7 +20,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from PySide6.QtWidgets import QApplication, QLineEdit, QSpinBox
+from PySide6.QtCore import QMargins
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QSpinBox, QTableWidget
 
 app = QApplication(sys.argv)   # 🤖 先建 app 再 import gui_fulltest（widget 建立時要 QGuiApplication）
 
@@ -228,6 +231,30 @@ while time.monotonic() < end and win.thread.isRunning():
     app.processEvents()
     time.sleep(0.01)
 check("thread exited after close", not win.thread.isRunning())
+
+# ── FulltestPage: .ui skeleton + takeCentralWidget embedding (lazy import: app must exist first) ──
+from gateway.pages.fulltest_page import FulltestPage
+
+page = FulltestPage()
+page.show()
+pump(0.3)
+check("page .ui root objectName + zero-margin layout",
+      page.objectName() == 'fulltest_page' and page.layout() is not None
+      and page.layout().contentsMargins() == QMargins(0, 0, 0, 0))
+check("embedSlot is the only slot and holds the embedded widget",
+      page.embedSlot.count() == 1 and page.embedSlot.itemAt(0).widget() is not None)
+check("whole gui_fulltest UI lives under the page (QSS cascade has a root)",
+      page.findChild(QPushButton, 'run_all') is not None
+      and len(page.findChildren(QTableWidget)) >= 1)
+check("page-level theme QSS applied", 'QWidget#fulltest_page' in page.styleSheet())
+page._on_app_quit()   # aboutToQuit path -> original closeEvent cleanup chain
+end = time.monotonic() + 5
+while time.monotonic() < end and page._win.thread.isRunning():
+    app.processEvents()
+    time.sleep(0.01)
+check("page quit closes embedded thread (idempotent)", not page._win.thread.isRunning())
+page._on_app_quit()
+check("second _on_app_quit is a no-op", page._quit_done)
 
 print("=" * 50, flush=True)
 print("E2E_GUI_FULLTEST " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)}): {FAILS}"), flush=True)

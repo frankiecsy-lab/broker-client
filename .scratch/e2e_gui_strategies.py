@@ -26,8 +26,9 @@ import gateway.state_store as state_store  # noqa: E402
 _TMPDIR = tempfile.mkdtemp()
 state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state.json'   # 🤖 hermetic：tmp state 檔
 
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSpinBox  # noqa: E402
+from PySide6.QtCore import QMargins, Qt  # noqa: E402
+from PySide6.QtWidgets import (QApplication, QLabel, QPushButton, QGroupBox,  # noqa: E402
+                               QSpinBox)
 
 app = QApplication.instance() or QApplication([])  # noqa: E402
 
@@ -121,10 +122,36 @@ _CI = {c: i for i, c in enumerate(COLUMNS)}
 page = StrategiesPage()   # #32：冇標的輸入 → 唔再需要 StubDir
 page.show()
 pump()
-check('空表 → 空提示 status + counts 0', page.model.rowCount() == 0
-      and '暫時冇策略' in page.status_lbl.text())
+# ── Part 2b：`.ui` 骨架（排版喺 gateway/ui/strategies_page.ui；條件/參數數量屬資料 → 填進 slot）──
+lay = page.layout()
+check('`.ui` root objectName + Designer margin/spacing 照載入',
+      page.objectName() == 'strategies_page' and lay is not None
+      and lay.contentsMargins() == QMargins(10, 8, 10, 8) and lay.spacing() == 6)
+check('靜態控件全部由 `.ui` 建出（objectName 即身份契約）',
+      all(getattr(page, n, None) is not None for n in
+          ('str_table', 'str_name_edit', 'str_buffer_spin', 'str_price_lbl', 'str_qty_lbl',
+           'str_add_btn', 'str_save_btn', 'str_remove_btn', 'str_clear_btn',
+           'str_counts', 'str_status')))
+check('買／賣 GroupBox 同兩個空 slot 由 `.ui` 建出（str_<side>_group / _paramSlot / _rulesSlot）',
+      all(page.findChild(QGroupBox, f'str_{s}_group') is not None
+          and getattr(page, f'str_{s}_paramSlot') is not None
+          and getattr(page, f'str_{s}_rulesSlot') is not None for s in ('buy', 'sell')))
+check('og / WA_StyledBackground 由 _STAMP 補返（Designer 帶唔住 dynamic property）',
+      page.str_add_btn.property('og') == 'strbtn'
+      and page.str_price_lbl.property('og') == 'strfixed'
+      and page.testAttribute(Qt.WA_StyledBackground))
+_ed = page.buy_editor
+_pd = _ed._cur_def()
+check('參數欄按 CONDITION_DEFS 生成並填進 paramSlot（加條件類型唔使改 `.ui`）',
+      _ed.param_slot.count() == 2 * len(_pd.params) + 1
+      and all(page.findChild(QSpinBox, f'str_buy_param_{p.key}') is not None
+              for p in _pd.params if p.is_int))
+check('頁面 QSS 有根（objectName → QSS cascade）', 'QWidget#strategies_page' in page.styleSheet())
 
-page.name_edit.setText('T1')
+check('空表 → 空提示 status + counts 0', page.model.rowCount() == 0
+      and '暫時冇策略' in page.str_status.text())
+
+page.str_name_edit.setText('T1')
 check('objectName 齊：param spin / score / add_btn（E2E hook 契約）',
       isinstance(page.findChild(QSpinBox, 'str_buy_param_fast'), QSpinBox)
       and isinstance(page.findChild(QSpinBox, 'str_sell_score'), QSpinBox))
@@ -154,18 +181,25 @@ page.buy_editor._param_widgets['slow'].setValue(120)
 page.buy_editor.score_spin.setValue(60)
 page.buy_editor.add_btn.click()
 pump()
+check('已加條件逐條填進 rulesSlot（每條 = 一個 strategy_rule_row.ui：label + ✕）',
+      page.buy_editor.rules_slot.count() == len(page.buy_editor._draft) == 2
+      and page.buy_editor.rules_slot.itemAt(0).widget().objectName() == 'str_buy_rule_row_0'
+      and page.buy_editor.rules_slot.itemAt(0).widget().findChild(QLabel, 'rule_lbl') is None
+      and page.buy_editor.rules_slot.itemAt(0).widget().layout().count() == 2
+      and page.findChild(QLabel, 'str_buy_rule_0').property('og') == 'strrule'
+      and page.findChild(QPushButton, 'str_buy_rule_1_del').property('og') == 'strrule')
 page.sell_editor.side_combo.setCurrentIndex(1)   # below
 page.sell_editor.score_spin.setValue(100)
 page.sell_editor.add_btn.click()
 pump()
 check('#29 buffer spinbox 存在（0–200）預設 10',
       isinstance(page.findChild(QSpinBox, 'str_buffer_spin'), QSpinBox)
-      and page.buffer_spin.value() == 10 and page.buffer_spin.maximum() == 200)
-page.buffer_spin.setValue(5)
-page.add_btn.click()
+      and page.str_buffer_spin.value() == 10 and page.str_buffer_spin.maximum() == 200)
+page.str_buffer_spin.setValue(5)
+page.str_add_btn.click()
 pump()
 check('新增 → 1 行 + status 已新增', page.model.rowCount() == 1
-      and '已新增' in page.status_lbl.text())
+      and '已新增' in page.str_status.text())
 check('#32 表得返三欄（名稱/買/賣）；摘要照符號化',
       page.model.columnCount() == 3
       and page.model.data(page.model.index(0, _CI['buy'])) == 'C>VOB (+40) ＋ MA20>MA120 (+60)'
@@ -176,51 +210,57 @@ check('JSON 檔：mode enum（market/min_lot）+ score 原樣 60/40/100 + id s- 
       and [r['score'] for r in e0['buy']] == [40, 60] and e0['id'].startswith('s-')
       and e0['mark_buffer'] == 5 and 'code' not in e0 and 'validity' not in e0)
 
-page.table.selectRow(0)
+page.str_table.selectRow(0)
 pump()
 check('揀行 → 載入表單（name/draft/sel_id + 編輯中 status）',
-      page._sel_id == e0['id'] and page.name_edit.text() == 'T1'
-      and len(page.buy_editor._draft) == 2 and '編輯中' in page.status_lbl.text())
-check('#29 揀行 → buffer spin 回填 5', page.buffer_spin.value() == 5)
-page.name_edit.setText('T1b')
-page.buffer_spin.setValue(20)
-page.save_btn.click()
+      page._sel_id == e0['id'] and page.str_name_edit.text() == 'T1'
+      and len(page.buy_editor._draft) == 2 and '編輯中' in page.str_status.text())
+check('#29 揀行 → buffer spin 回填 5', page.str_buffer_spin.value() == 5)
+page.str_name_edit.setText('T1b')
+page.str_buffer_spin.setValue(20)
+page.str_save_btn.click()
 pump()
 check('套用修改 → manager 更新 + status（#29 mark_buffer 20 跟改）',
       st.get_manager().get(e0['id'])['name'] == 'T1b'
       and st.get_manager().get(e0['id'])['mark_buffer'] == 20
-      and t('str_updated', 'zh_hk') in page.status_lbl.text())
+      and t('str_updated', 'zh_hk') in page.str_status.text())
 
-page.table.selectRow(0)
+page.str_table.selectRow(0)
 pump()
-page.remove_btn.click()
+page.str_remove_btn.click()
 pump()
 check('刪除所選 → 0 行 + status 已刪除 + 檔清空',
-      page.model.rowCount() == 0 and '已刪除' in page.status_lbl.text()
+      page.model.rowCount() == 0 and '已刪除' in page.str_status.text()
       and json.loads(state_store.STATE_PATH.read_text(encoding='utf-8'))['strategies']['items'] == [])
-page.name_edit.clear()   # 空名 → str_bad_name（#32：標的驗證已退役）
-page.add_btn.click()
+page.str_name_edit.clear()   # 空名 → str_bad_name（#32：標的驗證已退役）
+page.str_add_btn.click()
 pump()
 check('空名 → status 提示 + 冇新增', page.model.rowCount() == 0
-      and t('str_bad_name', 'zh_hk') in page.status_lbl.text())
-page.save_btn.click()
+      and t('str_bad_name', 'zh_hk') in page.str_status.text())
+page.str_save_btn.click()
 pump()
-check('冇揀行 save → str_no_sel 提示', t('str_no_sel', 'zh_hk') in page.status_lbl.text())
+check('冇揀行 save → str_no_sel 提示', t('str_no_sel', 'zh_hk') in page.str_status.text())
 
 # ══ Part 3：三語 + shell 註冊 + i18n 鍵齊 ═════════════════════════════════
 print('── Part 3: 三語 / 註冊 / i18n ──')
-page.name_edit.setText('T2')
+page.str_name_edit.setText('T2')
 page.buy_editor.add_btn.click()
 page.sell_editor.add_btn.click()
-page.add_btn.click()
+page.str_add_btn.click()
 pump()
 page.retranslate('en')
 pump()
 check('retranslate EN → 表頭 Name / 組標題 / 類型名 MA Cross / nav 字串',
       page.model.headerData(_CI['name'], Qt.Horizontal) == 'Name'
-      and 'Buy' in page.buy_editor.title()
+      and 'Buy' in page.str_buy_group.title()
       and page.buy_editor.type_combo.itemText(0) == 'MA Cross'
       and t('nav_strategies', 'en') == 'Strategies')
+# 兩邊 GroupBox 標題 / 分數 label / 加條件掣一律由 `_TEXT` 表-driven（code 冇逐邊 setText）
+check('_TEXT 覆蓋兩邊 GroupBox 文案（apply_text 連 QGroupBox.setTitle 都處理）',
+      page.str_buy_group.title() == t('str_buy_title', 'en')
+      and page.str_sell_group.title() == t('str_sell_title', 'en')
+      and page.str_buy_scorelbl.text() == page.str_sell_scorelbl.text() == t('str_score_lbl', 'en')
+      and page.str_buy_add_btn.text() == page.str_sell_add_btn.text() == t('str_add_rule', 'en'))
 page.retranslate('zh_cn')
 pump()
 check('zh_cn 表頭简体', page.model.headerData(_CI['buy'], Qt.Horizontal) == '买入条件')

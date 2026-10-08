@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>StandaloneWindow</class>
+ <!-- 單頁 Debug 外殼（gateway/pages/base_page.py 嘅 run_standalone）：頂欄 + page 本體。
+      排版同主外殼 app_shell.ui 一致（oneGateRoot → 0 margin rootLayout → bar + 內容），
+      所以兩邊食同一套 theme.py QSS（#oneGateRoot / [og="navbar"] / #standalone_*）。
+      屬資料、由 code 填：語言 item = `LANGS`/`LANG_LABELS`、page 本體 = `page_cls()` 填進 `pageSlot`。 -->
+ <widget class="QMainWindow" name="standalone_window">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1080</width>
+    <height>720</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>One Gate (standalone)</string>
+  </property>
+  <widget class="QWidget" name="oneGateRoot">
+   <layout class="QVBoxLayout" name="rootLayout">
+    <property name="leftMargin"><number>0</number></property>
+    <property name="topMargin"><number>0</number></property>
+    <property name="rightMargin"><number>0</number></property>
+    <property name="bottomMargin"><number>0</number></property>
+    <property name="spacing"><number>0</number></property>
+    <item>
+     <widget class="QWidget" name="standalone_bar" native="true">
+      <layout class="QHBoxLayout" name="barLayout">
+       <property name="leftMargin"><number>16</number></property>
+       <property name="topMargin"><number>8</number></property>
+       <property name="rightMargin"><number>16</number></property>
+       <property name="bottomMargin"><number>8</number></property>
+       <property name="spacing"><number>6</number></property>
+       <!-- 文字一律屬裝飾：來源係 i18n（base_page._TEXT / _retranslate） -->
+       <item>
+        <widget class="QLabel" name="standalone_title">
+         <property name="text"><string>頁面</string></property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="titleGap">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Policy::Expanding</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="standalone_langlbl">
+         <property name="text"><string>語言</string></property>
+        </widget>
+       </item>
+       <item>
+        <!-- item 由 LANGS / LANG_LABELS 填（加語言唔使改 `.ui`） -->
+        <widget class="QComboBox" name="standalone_lang"/>
+       </item>
+       <item>
+        <widget class="QPushButton" name="standalone_theme">
+         <property name="text"><string>主題</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <!-- page 本體由 `page_cls()` 填進呢個空 slot（每頁自己嘅 `.ui` 排版，外殼唔知） -->
+     <layout class="QVBoxLayout" name="pageSlot"/>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+</ui>

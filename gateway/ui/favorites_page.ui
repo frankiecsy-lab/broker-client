@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FavoritesPage</class>
+ <widget class="QWidget" name="favorites_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <item>
+    <layout class="QHBoxLayout" name="topRow">
+     <item>
+      <widget class="QLineEdit" name="fav_add_edit">
+       <property name="placeholderText"><string>代號 / 名稱</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="fav_add_btn">
+       <property name="text"><string>＋ 新增</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="fav_remove_btn">
+       <property name="text"><string>🗑 刪除所選</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- FILTER 兩組按鈕由 favorites_page.py 按 MARKETS / TYPES 填進 mktSlot / typeSlot
+        （按鈕數量屬資料；兩組嘅位置、間距先屬排版 → Designer 可調） -->
+   <item>
+    <layout class="QHBoxLayout" name="filterRow">
+     <property name="spacing"><number>3</number></property>
+     <item>
+      <layout class="QHBoxLayout" name="mktSlot"/>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="typeSlot"/>
+     </item>
+     <item>
+      <spacer name="filterStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableView" name="fav_table">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomRow">
+     <item>
+      <widget class="QLabel" name="fav_counts">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="bottomStretch">
+       <property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property>
+       <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="fav_status">
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

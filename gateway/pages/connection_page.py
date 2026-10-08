@@ -1,6 +1,6 @@
 """One Gate Page 3 — 連綫測試（config.json editor + FUTU OpenD / IB Gateway probes）。
 
-ticket #05 實裝：
+UI 喺 `gateway/ui/connection_page.ui`（Qt Designer 可直接編輯），呢檔得返業務邏輯：
 - **Config editor**：載入 `modules/config.json` 現值入 form；save 時只改 loaded dict 入面嘅
   futu.host/port、ib.host/port、kline_num，再 dump 返（indent=4 + ensure_ascii=False）—
   source / kline_adj / ib.symbol_aliases 等其他欄位原封不動（json.load 保留插入順序）。
@@ -12,7 +12,8 @@ ticket #05 實裝：
   server-time RTT；行完即刻 disconnect。QThread 入面開新 event loop 跑 async probe。
 
 Theme 傳播：頁面級 QSS template（palette 由 gateway.theme.THEMES 注入，經 listener registry
-跟隨外殼切換）— 同 fulltest_page 同一 pattern。
+跟隨外殼切換）— 同 fulltest_page 同一 pattern。QSS 用嘅 `og` / `role` property 由 `_STAMP`
+喺 load 後注入（Designer 帶唔住自訂 property，見 `gateway/ui/bind.py`）。
 
 單獨運行：`python gateway/pages/connection_page.py`（standalone window，帶語言/theme 控制）。
 """
@@ -28,12 +29,12 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QThread, Signal  # noqa: E402
-from PySide6.QtWidgets import (  # noqa: E402
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QWidget  # noqa: E402
 
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway.ui.loader import apply_ui  # noqa: E402
 
 # config.json 路徑 — pathlib 跨平台（AGENTS.md：禁 hardcode 斜線）
 CONFIG_PATH = Path(__file__).resolve().parents[2] / 'modules' / 'config.json'
@@ -170,6 +171,49 @@ QPushButton[og="savebtn"] {
 QPushButton[og="savebtn"]:hover { background-color: $accent_pressed; }
 ''')
 
+# objectName → QSS property（Designer 帶唔住自訂 dynamic property，load 後由 stamp 還原）
+_STAMP = {
+    'card_header': {'og': 'pagecard'},
+    'card_config': {'og': 'pagecard'},
+    'card_probe': {'og': 'pagecard'},
+    'title_lbl': {'role': 'pagetitle'},
+    'body_lbl': {'role': 'pagebody'},
+    'cfg_title_lbl': {'role': 'sectitle'},
+    'probe_title_lbl': {'role': 'sectitle'},
+    'futu_group_lbl': {'role': 'formlabel'},
+    'ib_group_lbl': {'role': 'formlabel'},
+    'kline_lbl': {'role': 'formlabel'},
+    'host_lbl_a': {'role': 'formlabel'},
+    'port_lbl_a': {'role': 'formlabel'},
+    'host_lbl_b': {'role': 'formlabel'},
+    'port_lbl_b': {'role': 'formlabel'},
+    'kline_lbl': {'role': 'formlabel'},
+    'save_cfg_btn': {'og': 'savebtn'},
+    'probe_futu_btn': {'og': 'actionbtn'},
+    'probe_ib_btn': {'og': 'actionbtn'},
+    'cfg_status': {'role': 'result'},
+    'futu_result': {'role': 'result'},
+    'ib_result': {'role': 'result'},
+}
+
+# objectName → i18n key（全部文字以呢張表為準，`.ui` 入面嘅字得返俾 Designer 睇）
+_TEXT = {
+    'title_lbl': 'page_connection_title',
+    'body_lbl': 'page_connection_body',
+    'cfg_title_lbl': 'conn_cfg_title',
+    'probe_title_lbl': 'conn_probe_title',
+    'futu_group_lbl': 'conn_futu_group',
+    'ib_group_lbl': 'conn_ib_group',
+    'kline_lbl': 'conn_kline_num',
+    'host_lbl_a': 'conn_host',
+    'port_lbl_a': 'conn_port',
+    'host_lbl_b': 'conn_host',
+    'port_lbl_b': 'conn_port',
+    'save_cfg_btn': 'conn_save',
+    'probe_futu_btn': 'conn_probe_futu_btn',
+    'probe_ib_btn': 'conn_probe_ib_btn',
+}
+
 
 class ConnectionPage(QWidget):
     """連綫測試頁 — config.json editor（保留結構）+ FUTU OpenD / IB Gateway probes。
@@ -181,128 +225,10 @@ class ConnectionPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setObjectName('connection_page')
+        apply_ui(self, 'connection_page')
         self.setAttribute(Qt.WA_StyledBackground, True)   # bare QWidget 要呢個先會畫頁面級 QSS background
-        v = QVBoxLayout(self)
-        v.setContentsMargins(24, 24, 24, 24)
-
-        # ── Header card（標題 + 說明；pagetitle/pagebody 由 app-level [og="pagecard"] 規則 style）──
-        header = self._make_card()
-        hv = QVBoxLayout(header)
-        hv.setContentsMargins(32, 24, 32, 24)
-        self.title_lbl = QLabel()
-        self.title_lbl.setProperty('role', 'pagetitle')
-        self.body_lbl = QLabel()
-        self.body_lbl.setProperty('role', 'pagebody')
-        self.body_lbl.setWordWrap(True)
-        hv.addWidget(self.title_lbl)
-        hv.addSpacing(10)
-        hv.addWidget(self.body_lbl)
-        v.addWidget(header)
-
-        # ── Config editor card ──
-        cfg_card = self._make_card()
-        cv = QVBoxLayout(cfg_card)
-        cv.setContentsMargins(32, 24, 32, 24)
-        self.cfg_title_lbl = QLabel()
-        self.cfg_title_lbl.setProperty('role', 'sectitle')
-        cv.addWidget(self.cfg_title_lbl)
-        cv.addSpacing(12)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
-        def _form_label(key):
-            lbl = QLabel(t(key, DEFAULT_LANG))
-            lbl.setProperty('role', 'formlabel')
-            return lbl
-
-        self.futu_group_lbl = _form_label('conn_futu_group')
-        self.host_lbl_a = _form_label('conn_host')
-        self.port_lbl_a = _form_label('conn_port')
-        self.ib_group_lbl = _form_label('conn_ib_group')
-        self.host_lbl_b = _form_label('conn_host')
-        self.port_lbl_b = _form_label('conn_port')
-        self.kline_lbl = _form_label('conn_kline_num')
-
-        def _edit(name):
-            e = QLineEdit()
-            e.setObjectName(name)
-            return e
-
-        self.futu_host_edit = _edit('futu_host')
-        self.futu_port_edit = _edit('futu_port')
-        self.ib_host_edit = _edit('ib_host')
-        self.ib_port_edit = _edit('ib_port')
-        self.kline_num_edit = _edit('kline_num')
-
-        grid.addWidget(self.futu_group_lbl, 0, 0)
-        grid.addWidget(self.host_lbl_a, 0, 1)
-        grid.addWidget(self.futu_host_edit, 0, 2)
-        grid.addWidget(self.port_lbl_a, 0, 3)
-        grid.addWidget(self.futu_port_edit, 0, 4)
-        grid.addWidget(self.ib_group_lbl, 1, 0)
-        grid.addWidget(self.host_lbl_b, 1, 1)
-        grid.addWidget(self.ib_host_edit, 1, 2)
-        grid.addWidget(self.port_lbl_b, 1, 3)
-        grid.addWidget(self.ib_port_edit, 1, 4)
-        grid.addWidget(self.kline_lbl, 2, 1)
-        grid.addWidget(self.kline_num_edit, 2, 2)
-        cv.addLayout(grid)
-
-        save_row = QHBoxLayout()
-        self.save_btn = QPushButton(t('conn_save', DEFAULT_LANG))
-        self.save_btn.setObjectName('save_cfg_btn')
-        self.save_btn.setProperty('og', 'savebtn')
-        self.save_btn.clicked.connect(self._on_save_config)
-        self.status_lbl = QLabel('')
-        self.status_lbl.setObjectName('cfg_status')
-        self.status_lbl.setProperty('role', 'result')
-        save_row.addWidget(self.save_btn)
-        save_row.addSpacing(16)
-        save_row.addWidget(self.status_lbl, 1)
-        cv.addLayout(save_row)
-        v.addWidget(cfg_card)
-
-        # ── Probe card ──
-        probe_card = self._make_card()
-        pv = QVBoxLayout(probe_card)
-        pv.setContentsMargins(32, 24, 32, 24)
-        self.probe_title_lbl = QLabel()
-        self.probe_title_lbl.setProperty('role', 'sectitle')
-        pv.addWidget(self.probe_title_lbl)
-        pv.addSpacing(12)
-
-        btn_row = QHBoxLayout()
-        self.futu_btn = QPushButton(t('conn_probe_futu_btn', DEFAULT_LANG))
-        self.futu_btn.setObjectName('probe_futu_btn')
-        self.futu_btn.setProperty('og', 'actionbtn')
-        self.futu_btn.clicked.connect(lambda: self._on_probe('futu'))
-        self.ib_btn = QPushButton(t('conn_probe_ib_btn', DEFAULT_LANG))
-        self.ib_btn.setObjectName('probe_ib_btn')
-        self.ib_btn.setProperty('og', 'actionbtn')
-        self.ib_btn.clicked.connect(lambda: self._on_probe('ib'))
-        btn_row.addWidget(self.futu_btn)
-        btn_row.addSpacing(12)
-        btn_row.addWidget(self.ib_btn)
-        pv.addLayout(btn_row)
-        pv.addSpacing(14)
-
-        self.futu_result_lbl = QLabel('')
-        self.futu_result_lbl.setObjectName('futu_result')
-        self.futu_result_lbl.setProperty('role', 'result')
-        self.futu_result_lbl.setWordWrap(True)
-        self.ib_result_lbl = QLabel('')
-        self.ib_result_lbl.setObjectName('ib_result')
-        self.ib_result_lbl.setProperty('role', 'result')
-        self.ib_result_lbl.setWordWrap(True)
-        pv.addWidget(self.futu_result_lbl)
-        pv.addSpacing(10)
-        pv.addWidget(self.ib_result_lbl)
-        v.addWidget(probe_card)
-
-        v.addStretch(1)
+        stamp(self, _STAMP)                               # objectName → QSS property（Designer 帶唔住）
+        self._connect_signals()
 
         # ── state ──
         self._lang = DEFAULT_LANG
@@ -311,40 +237,34 @@ class ConnectionPage(QWidget):
         self._ib_worker = None
 
         self._load_config()
+        self.retranslate(DEFAULT_LANG)
         theme_mod.add_listener(self._on_theme_changed)   # apply_theme 完成後同步通知（PySide6 冇 styleSheetChanged）
         self._apply_embedded_theme(theme_mod.CURRENT)    # 初始 theme（讀 live module attr，避免 stale import binding）
-
-    @staticmethod
-    def _make_card():
-        card = QWidget()
-        card.setProperty('og', 'pagecard')
-        card.setAttribute(Qt.WA_StyledBackground, True)
-        return card
 
     # ── config editor ─────────────────────────────────────────────
     def _load_config(self):
         """載入 modules/config.json 現值入 form（保留原 dict 引用俾 save 用）。"""
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             self._cfg = json.load(f)   # dict 插入順序保留 → save 時其他欄位原封不動
-        self.futu_host_edit.setText(str(self._cfg.get('futu', {}).get('host', '')))
-        self.futu_port_edit.setText(str(self._cfg.get('futu', {}).get('port', '')))
-        self.ib_host_edit.setText(str(self._cfg.get('ib', {}).get('host', '')))
-        self.ib_port_edit.setText(str(self._cfg.get('ib', {}).get('port', '')))
-        self.kline_num_edit.setText(str(self._cfg.get('kline_num', '')))
+        self.futu_host.setText(str(self._cfg.get('futu', {}).get('host', '')))
+        self.futu_port.setText(str(self._cfg.get('futu', {}).get('port', '')))
+        self.ib_host.setText(str(self._cfg.get('ib', {}).get('host', '')))
+        self.ib_port.setText(str(self._cfg.get('ib', {}).get('port', '')))
+        self.kline_num.setText(str(self._cfg.get('kline_num', '')))
 
     def _on_save_config(self):
         """保存：只改 loaded dict 入面嘅可編輯欄位，dump 返（indent=4）— 其他欄位原封不動。"""
         try:
-            futu_port = int(self.futu_port_edit.text().strip())
-            ib_port = int(self.ib_port_edit.text().strip())
-            kline_num = int(self.kline_num_edit.text().strip())
+            futu_port = int(self.futu_port.text().strip())
+            ib_port = int(self.ib_port.text().strip())
+            kline_num = int(self.kline_num.text().strip())
         except ValueError:
-            self.status_lbl.setText(t('conn_int_err', self._lang))
+            self.cfg_status.setText(t('conn_int_err', self._lang))
             return
         cfg = self._cfg if isinstance(self._cfg, dict) else {}
-        cfg.setdefault('futu', {})['host'] = self.futu_host_edit.text().strip() or '127.0.0.1'
+        cfg.setdefault('futu', {})['host'] = self.futu_host.text().strip() or '127.0.0.1'
         cfg['futu']['port'] = futu_port
-        cfg.setdefault('ib', {})['host'] = self.ib_host_edit.text().strip() or '127.0.0.1'
+        cfg.setdefault('ib', {})['host'] = self.ib_host.text().strip() or '127.0.0.1'
         cfg['ib']['port'] = ib_port
         cfg['kline_num'] = kline_num
         try:
@@ -352,23 +272,23 @@ class ConnectionPage(QWidget):
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
                 f.write('\n')
         except OSError as e:
-            self.status_lbl.setText(t('conn_save_err', self._lang).format(err=e))
+            self.cfg_status.setText(t('conn_save_err', self._lang).format(err=e))
             return
-        self.status_lbl.setText(t('conn_saved_ok', self._lang))
+        self.cfg_status.setText(t('conn_saved_ok', self._lang))
 
     # ── probes ────────────────────────────────────────────────────
     def _on_probe(self, name):
         """撳 probe 按鈕 → QThread 背景跑（唔 block UI）；運行中 disable 防重入。"""
         if name == 'futu':
-            btn, result_lbl = self.futu_btn, self.futu_result_lbl
+            btn, result_lbl = self.probe_futu_btn, self.futu_result
             worker_attr = '_futu_worker'
-            host = self.futu_host_edit.text().strip() or '127.0.0.1'
-            port_text = self.futu_port_edit.text().strip()
+            host = self.futu_host.text().strip() or '127.0.0.1'
+            port_text = self.futu_port.text().strip()
         else:
-            btn, result_lbl = self.ib_btn, self.ib_result_lbl
+            btn, result_lbl = self.probe_ib_btn, self.ib_result
             worker_attr = '_ib_worker'
-            host = self.ib_host_edit.text().strip() or '127.0.0.1'
-            port_text = self.ib_port_edit.text().strip()
+            host = self.ib_host.text().strip() or '127.0.0.1'
+            port_text = self.ib_port.text().strip()
         try:
             port = int(port_text)
         except ValueError:
@@ -385,8 +305,8 @@ class ConnectionPage(QWidget):
 
     def _on_probe_done(self, name, result):
         """probe 完成（QThread signal）→ 人話顯示狀態同速度；失敗如實講原因。"""
-        btn = self.futu_btn if name == 'futu' else self.ib_btn
-        lbl = self.futu_result_lbl if name == 'futu' else self.ib_result_lbl
+        btn = self.probe_futu_btn if name == 'futu' else self.probe_ib_btn
+        lbl = self.futu_result if name == 'futu' else self.ib_result
         btn.setEnabled(True)
         if result.get('ok'):
             key = 'conn_futu_ok' if name == 'futu' else 'conn_ib_ok'
@@ -415,17 +335,13 @@ class ConnectionPage(QWidget):
     def retranslate(self, lang: str):
         """外殼 / standalone window 語言切換時調用 — 全部文字跟隨（form 值唔變）。"""
         self._lang = lang
-        self.title_lbl.setText(t('page_connection_title', lang))
-        self.body_lbl.setText(t('page_connection_body', lang))
-        self.cfg_title_lbl.setText(t('conn_cfg_title', lang))
-        self.futu_group_lbl.setText(t('conn_futu_group', lang))
-        self.ib_group_lbl.setText(t('conn_ib_group', lang))
-        # Host/Port 三語同字 — 建檔時已 set，唔使重設
-        self.kline_lbl.setText(t('conn_kline_num', lang))
-        self.save_btn.setText(t('conn_save', lang))
-        self.probe_title_lbl.setText(t('conn_probe_title', lang))
-        self.futu_btn.setText(t('conn_probe_futu_btn', lang))
-        self.ib_btn.setText(t('conn_probe_ib_btn', lang))
+        apply_text(self, _TEXT, lang)
+
+    # ── signal 接駁（`.ui` 嘅 <connections> 留空，接駁一律留喺 code）──
+    def _connect_signals(self):
+        self.save_cfg_btn.clicked.connect(self._on_save_config)
+        self.probe_futu_btn.clicked.connect(lambda: self._on_probe('futu'))
+        self.probe_ib_btn.clicked.connect(lambda: self._on_probe('ib'))
 
 
 if __name__ == '__main__':
