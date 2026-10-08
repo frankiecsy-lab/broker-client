@@ -184,11 +184,16 @@ class KlinePage(QWidget):
             btn.setProperty('og', 'indtoggle')             # 樣式經 _EXTRA_QSS_TPL（唔 bake，跟 theme）
             btn.setCheckable(True)
             btn.setChecked(e['enabled'])
-            pos_key = 'ind_pos_main' if e['position'] == 'main' else 'ind_pos_sub'
-            btn.setToolTip(f"{d.label} · {t(pos_key, self._lang)}")
+            btn.setToolTip(self._ind_tooltip(d, e['position'], self._lang))
             btn.toggled.connect(lambda on, iid=e['id']: self._on_ind_toggle(iid, on))
             self._ind_bar_layout.insertWidget(1, btn)      # label 之後、stretch 之前
             self._ind_toggles[e['id']] = btn
+
+    @staticmethod
+    def _ind_tooltip(d, position, lang):
+        """開關掣 tooltip：指標名 · 位置 + 一行描寫（完整用法喺指標管理頁嘅可摺疊詳情）。"""
+        pos_key = 'ind_pos_main' if position == 'main' else 'ind_pos_sub'
+        return '%s · %s\n%s' % (d.label, t(pos_key, lang), t(d.desc_key, lang))
 
     def _on_ind_toggle(self, inst_id, on):
         self._mgr.set_enabled(inst_id, on, origin='kline_page')
@@ -223,11 +228,9 @@ class KlinePage(QWidget):
         self._ind_bar_lbl.setText(t('ind_show_label', lang))
         for e in self._mgr.items():
             btn = self._ind_toggles.get(e['id'])
-            if btn is not None:
-                pos_key = 'ind_pos_main' if e['position'] == 'main' else 'ind_pos_sub'
-                d = indicators.INDICATOR_DEFS.get(e['def'])
-                if d is not None:
-                    btn.setToolTip(f"{d.label} · {t(pos_key, lang)}")
+            d = indicators.INDICATOR_DEFS.get(e['def'])
+            if btn is not None and d is not None:
+                btn.setToolTip(self._ind_tooltip(d, e['position'], lang))
 
 
 if __name__ == '__main__':

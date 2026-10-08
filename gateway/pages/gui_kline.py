@@ -5,7 +5,7 @@
 版面（上 → 下）：
   0. 大字現價列：標的 · 週期 | 較上一根 bar 漲跌 | 大字現價（每次資料刷新閃一下白）| 右上角時間（最後推送 wall clock + 最新 K 線時間 — 一眼睇出推送有冇行緊）
   1. 巨大窗口：K 綫圖（蠟燭 + 成交量，默認顯示最後 300 根；現價水平虛線 + 右側標注跟隨最新 close；滑鼠懸停看 OHLCV 明細）
-     🖱️ 手勢：左鍵拖動 = 左右平移 · 滾輪 = 以游標為中心縮放 · 右鍵 = 復位跟隨最新
+     🖱️ 手勢：左鍵拖動 = 左右平移 · 滾輪 = 以游標為中心縮放 · 右鍵 或 左鍵雙擊 = 還原縮放並跟隨最新
   2. 中間控制列：標的代碼（🤖 P8 模糊輸入 — Futu code/中文名/英文名，本地 index + pass-through）
      / K 綫週期 / KLINE 數量 / 券商（futu/ib）/ 測試按鍵 + 語言切換（繁中/EN）+ FETCH 掣 + 狀態標籤
   3. 下方可折疊窗口：DF 結果表 — 每次更新前必先清空；時間反向排序（最新 bar 喺最上面）
@@ -34,8 +34,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+from matplotlib.path import Path
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from modules.broker import BrokerClient
 from modules.registry import BROKERS as BROKER_REGISTRY   # 🤖 P2：券商名單一來源（唔再硬編碼）
 from modules.symbol_search import get_directory          # 🤖 P8：本地 symbol index（fuzzy 輸入 + FETCH）
@@ -154,18 +156,36 @@ def _fmt_big(v):
     return f"{v:.2f}"
 
 
+def _fmt_volume(val, _pos):
+    """成交量軸標籤（K/M/B）。🤖 模塊級：formatter 只喺重建靜態層時設一次。"""
+    for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(val) >= div:
+            return f"{val / div:.0f}{suf}"
+    return f"{val:.0f}"
+
+
 # ─────────────────────────── K 綫圖（上方巨大窗口） ───────────────────────────
 
 class KlineChart(QWidget):
     """蠟燭圖（上 3/4）+ 成交量（下 1/4），matplotlib 嵌入 Qt。
 
     set_bars(rows) 推數據入嚟；widget 唔 poll、唔擁有任何 broker 狀態。
-    🖱️ 手勢：左鍵拖動 = 左右平移 · 滾輪 = 以游標為中心縮放 · 右鍵 = 復位跟隨最新。
+    🖱️ 手勢：左鍵拖動 = 左右平移 · 滾輪 = 以游標為中心縮放 · 右鍵 或 左鍵雙擊 = 還原縮放並跟隨最新。
+
+    🎨 繪畫分兩層（#22）：`_rebuild_static`（全部 bar 一次過畫成 3 個 collection，只有數據/axes 變咗先做）
+    · `_apply_view`（pan·zoom·hover 淨係改 limits + 重算可見 Y fit）。x 一律用絕對 index（`_s` 恒 0）。
+    🎞️ 過渡（#23）：縮放 / 復位 / 松手慣性一律經 `_animate_to`（ease-out，`ANIM_MS`）—
+    🤖 唔係為咗幀率：Agg 喺 1400×700 有 ~20-25 ms 底線（≈40-50 fps），順唔順係靠每幀位移細 + 有加減速。
     """
 
     MAX_DRAW = 300   # 跟隨模式畫最後 N 根 — 保持實時重繪流暢 + 蠟燭夠寬睇得清
     MIN_VIEW = 20    # 🖱️ 縮放下限：最少可見 bar 數
     MAX_VIEW = 1000  # 🖱️ 縮放上限：最多可見 bar 數（同時係繪製數量上限，保性能）
+    ANIM_MS = 220    # 🖱️ 過渡時長：縮放 / 復位 / 慣性滑行嘅 ease-out 插值（#23）
+    ANIM_STEP = 16   # ~60fps 插值步進
+    PAN_EASE = 0.55  # 🖱️ 平滑平移（#24）：每幀追近游標位置嘅比例 → ~2 幀（≈30 ms）收歛，感覺唔到滯後，但每幀位移細
+    Y_TICKS = 6      # 🤖 刻度文字係每幀最大開支之一（9 個 → 6 個 = −3 ms/幀），少而清晰就夠
+    X_TICKS = 5      # 同上（時間標籤）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -173,7 +193,21 @@ class KlineChart(QWidget):
         self._hover_idx: int | None = None
         self._view: tuple[float, float] | None = None   # 🖱️ 用戶平移/縮放後嘅視窗範圍（絕對 index 座標）；None = 跟隨最新
         self._drag: tuple[float, float, float] | None = None  # 🖱️ 拖緊：(按下時游標絕對 x、視窗 xmin、xmax)
-        self._s = 0                        # 上次繪製 slice 嘅絕對起始 index（本地→絕對座標換算）
+        self._s = 0                        # 🤖 繪畫一律用絕對 index → 呢個基準恒為 0；保留欄位係為咗子类嘅 slice 契約
+        # 🖱️ 順暢度（#22）：分兩層 —— 靜態層（全部 bar 一次過畫，3 個 collection）/ 視窗層（pan·zoom 只改 limits）
+        self._ohlcv: dict[str, np.ndarray] = {}   # 全長度 o/h/l/c/v 陣列（set_bars 轉一次，之後唔再逐幀重砌）
+        self._static_dirty = True          # 數據/axes 變咗 → 下一幀重建靜態層
+        self._theme: tuple = ()            # 靜態層用咗嘅配色（theme 換咗要自動重建，見 _rebuild_static）
+        self._arts: list = []              # 靜態層 artist（只有重建時先清）
+        self._tag_txt = None               # 現價標注（預建，pan/zoom 只改位置）
+        self._cross = None                 # 🖱️ hover crosshair（預建，郁滑鼠只 set_xdata）
+        self._paint_pending = False        # 🖱️ 手勢節流旗標
+        self._anim = None                  # 🖱️ 進行中嘅過渡：(t0, 起始 view, 目標 view, 終止後否返跟隨)
+        self._anim_running = False         # 🖱️ 插值 timer 鏈喺唔喺度（唔使砌第二條）
+        self._drag_hist = []               # 🖱️ 拖動樣本 [(t, 絕對 x), ...] → 松手算慣性
+        self._pan_target = None            # 🖱️ 平滑平移（#24）：游標要求嘅 view，逐幀追近
+        self._pan_running = False          # 🖱️ 追近 timer 鏈喺唔喺度
+        self._y_lock = None                # 🖱️ 拖動期間鎖定嘅 (ax.ylim, axv.ylim) → 唔會邊拖邊重縮放
 
         fig = Figure(facecolor=C_SURFACE, edgecolor="none")
         gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.06,
@@ -181,6 +215,8 @@ class KlineChart(QWidget):
         self.ax = fig.add_subplot(gs[0])
         self.axv = fig.add_subplot(gs[1], sharex=self.ax)
         self.canvas = FigureCanvasQTAgg(fig)
+        self._style_ax(self.ax)
+        self._style_ax(self.axv)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 4, 6, 2)
@@ -200,11 +236,23 @@ class KlineChart(QWidget):
         self._rows = list(rows or [])
         self._hover_idx = None
         # 🖱️ 保留用戶平移/縮放位置（新 bar 接喺尾端，絕對 index 唔會移位）；clear() 先復位
+        # 🤖 一次過轉全長度陣列：之後 pan/zoom/hover 都唔再逐幀 from rows 砌 numpy（#22 A）
+        if self._rows:
+            cols = list(zip(*self._rows))
+            self._ohlcv = {k: np.array(cols[i], dtype=float)
+                           for i, k in enumerate('ohlcv', start=1)}
+        else:
+            self._ohlcv = {}
+        self._static_dirty = True
+        self._y_lock = None              # 🖱️ 換數據 = 尺度要重 fit
         self._redraw()
 
     def clear(self):
         self._view = None
         self._drag = None
+        self._anim = None
+        self._pan_target = None
+        self._drag_hist = []
         self.set_bars([])
 
     # --- 繪製 -----------------------------------------------------------------
@@ -216,99 +264,273 @@ class KlineChart(QWidget):
         ax.tick_params(colors=C_MUTED, labelsize=8)
         ax.grid(True, color=C_BORDER, linewidth=0.6, alpha=0.5)
 
+    # --- 兩層繪畫（#22：縮放/平移順唔順嘅關鍵） --------------------------------
+    # 🤖 舊做法：每幀 `ax.clear()` + `ax.bar` → 每根 bar 一個 Rectangle patch（300 根 = 600 patches），
+    #    實測一幀 241 ms、郁吓滑鼠 181 ms → 用戶感受到「非常唔順」。
+    # 家陣：靜態層（全部 bar 一次過畫 = 3 個 collection）只喺數據/axes 變咗先重建；
+    #       pan·zoom·hover 行視窗層（只改 limits + 由可見 slice 重算 Y fit）→ 對照實測 47 ms。
     def _redraw(self):
+        """完整一幀（數據 / 指標配置變化用）。手勢請用 `_request_redraw()`。"""
+        self._frame()
+        self.canvas.draw_idle()
+
+    def _frame(self):
+        """一幀嘅主體（唔計上屏）。子类重寫呢個 hook 就自動接到同一套手勢節流。"""
+        self._rebuild_static()
+        self._apply_view()
+
+    def _request_redraw(self):
+        """🖱️ C：手勢節流 —— 一次拖動/滾輪 Qt 會送幾十個 event。
+        狀態 + limits 即時更新（手勢數學永遠跟到最新、測試都係同步），上屏合併到 ~60fps。"""
+        self._frame()
+        if self._paint_pending:
+            return
+        self._paint_pending = True
+        QTimer.singleShot(16, self._flush_paint)
+
+    def _flush_paint(self):
+        self._paint_pending = False
+        self.canvas.draw_idle()
+
+    # --- 🖱️ 平滑過渡（#23）：縮放 / 復位 / 慣性滑行都行呢條路 ----------------------------
+    # 🤖 唔係為咗「快」：Agg 喺 1400×700 有 ~20-25 ms 底線（≈40-50 fps；真 60fps 要換 renderer）。
+    #    過渡嘅價值係**每幀位移細 + 有加減速** → 同樣幀率下睇落係動畫，唔係跳格。
+    def _animate_to(self, target, follow_at_end=False):
+        """由目前生效嘅視窗 ease-out 插值去 target。進行中就由「而家顯示緊嘅位置」接續 → 連續滾輪唔會跳。"""
+        self._flush_pan()                 # 🖱️ 過渡要由實際顯示緊嘅位置接續
+        start = self._view if self._view is not None else self._view_abs()
+        self._anim = (time.perf_counter(), (float(start[0]), float(start[1])),   # 🤖 手勢/動畫計時一律 perf_counter：Windows 嘅 monotonic 實測只有 ~16 ms 分辨率（會 dt=0）
+                      (float(target[0]), float(target[1])), follow_at_end)
+        if not self._anim_running:
+            self._anim_running = True
+            QTimer.singleShot(self.ANIM_STEP, self._anim_tick)
+
+    def _anim_tick(self):
+        self._anim_running = False
+        if self._anim is None or not self._rows:
+            return
+        t0, start, target, follow_at_end = self._anim
+        p = (time.perf_counter() - t0) * 1000.0 / self.ANIM_MS
+        if p >= 1.0:
+            self._anim = None
+            self._view = None if follow_at_end else target   # 跟隨模式要還原返 None，新 bar 先至跟到
+            self._y_lock = None                              # 🖱️ #24 滑行完結 → 一次過重縮放
+            self._frame()
+            self.canvas.draw_idle()
+            return
+        e = 1.0 - (1.0 - min(p, 1.0)) ** 3                   # ease-out cubic
+        self._view = (start[0] + (target[0] - start[0]) * e,
+                      start[1] + (target[1] - start[1]) * e)
+        self._frame()
+        self.canvas.draw_idle()
+        self._anim_running = True
+        QTimer.singleShot(self.ANIM_STEP, self._anim_tick)
+
+    def _cancel_anim(self):
+        self._anim = None
+
+    # --- 🖱️ 平滑平移（#24）：拖動唔再 1:1 跳格，而係逐幀追近游標 ---------------------------
+    # 🤖 同 #23 同一個道理：55 fps 下快速拖動每幀跳幾根 → 睇落跳格。逐幀指數追近令位移細而連續。
+    #    用「逐幀比例」而唔係時鐘：拖動係連續 input，時鐘插值會越拖越落後。
+    def _pan_to(self, target):
+        self._pan_target = (float(target[0]), float(target[1]))
+        if not self._pan_running:
+            self._pan_running = True
+            QTimer.singleShot(self.ANIM_STEP, self._pan_tick)
+
+    def _pan_tick(self):
+        self._pan_running = False
+        if self._pan_target is None or not self._rows:
+            return
+        cx, cy = self._view if self._view is not None else self._view_abs()
+        tx, ty = self._pan_target
+        if abs(tx - cx) < 0.02 and abs(ty - cy) < 0.02:      # 追到就即刻貼實，唔留殘差
+            self._view = self._pan_target
+            self._pan_target = None
+            self._frame()          # 🤖 一定要行 _frame（子类靠呢個 hook 重畫指標疊加）
+            self.canvas.draw_idle()
+            return
+        self._view = (cx + (tx - cx) * self.PAN_EASE, cy + (ty - cy) * self.PAN_EASE)
+        self._frame()
+        self.canvas.draw_idle()
+        self._pan_running = True
+        QTimer.singleShot(self.ANIM_STEP, self._pan_tick)
+
+    def _flush_pan(self):
+        """🖱️ 未追完嘅平移即刻貼實。任何要讀取「而家視窗」嘅動作（松手 / 縮放 / 再起 drag / 過渡）
+        之前都要先咁做，否則會由一個落後咗嘅位置開始計。"""
+        if self._pan_target is not None:
+            self._view = self._pan_target
+            self._pan_target = None
+
+    def _lock_y(self):
+        """🖱️ #24 手勢開始 → 凍結而家嘅 Y 尺度（拖動／滑行期間唔再 refit）。"""
+        self._y_lock = (tuple(self.ax.get_ylim()), tuple(self.axv.get_ylim()))
+
+    def _unlock_y(self):
+        """解除凍結並一次過重縮放（松手 / 縮放 / 換數據）。"""
+        if self._y_lock is None:
+            return
+        self._y_lock = None
+        self._frame()
+        self.canvas.draw_idle()
+
+    @staticmethod
+    def _rect_path(x, half, y0, y1):
+        """一批矩形 → **一個** compound Path（每塊 MOVETO + LINETO×3 + CLOSEPOLY）。
+        🤖 一定要 5 個頂點（第 5 個 = 起點重複）：`CLOSEPOLY` 唔會用自己嗰個頂點，
+        4 點配 [M,L,L,CLOSE] 實測得返一半面積 = **三角形**（用戶抓到：OB 變咗楔形）。"""
+        v = np.stack([np.column_stack([x - half, y0]), np.column_stack([x + half, y0]),
+                      np.column_stack([x + half, y1]), np.column_stack([x - half, y1]),
+                      np.column_stack([x - half, y0])], axis=1)
+        return Path(v.reshape(-1, 2),
+                    np.tile([Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO,
+                             Path.CLOSEPOLY], x.shape[0]))
+
+    @staticmethod
+    def _segs_path(x, y0, y1):
+        """一批豎直段（影線）→ **一個** compound Path（MOVETO/LINETO 成對）。"""
+        verts = np.empty((x.shape[0] * 2, 2))
+        verts[0::2] = np.column_stack([x, y0])
+        verts[1::2] = np.column_stack([x, y1])
+        return Path(verts, np.tile([Path.MOVETO, Path.LINETO], x.shape[0]))
+
+    def _rebuild_static(self):
+        """靜態層：一次過畫全部 bar（x = 絕對 index）+ 預建現價線/標注/crosshair。"""
+        # 🤖 配色（C_*）係 draw-time 先讀嘅模組級常數，而家砌進 collection 就固定咗 →
+        #    theme 換色（kline_page / quotes_page recipe 都係「改 gk.C_* + _redraw()」）要識得自己重建
+        theme = (C_UP, C_DOWN, C_SURFACE, C_BORDER, C_ACCENT, C_MUTED)
+        if not self._static_dirty and theme == self._theme:
+            return
+        self._theme = theme
+        self._static_dirty = False
+        for a in self._arts:
+            try:
+                a.remove()           # 只清自己砌嘅；指標 artist 由子类管
+            except Exception:        # axes 已被重建（子类 _build_axes）→ 唔喺度，唔使清
+                pass
+        self._arts = []
+        self._tag_txt = self._cross = None
         ax, axv = self.ax, self.axv
-        ax.clear()
-        axv.clear()
         self._style_ax(ax)
         self._style_ax(axv)
+        n = len(self._rows)
+        if n == 0:
+            self.readout.setText("—")
+            return
+
+        x = np.arange(n, dtype=float)
+        o, h, l, c, v = (self._ohlcv[k] for k in 'ohlcv')
+        half = 0.35 if n > 2 else 0.6                  # 實體闊 0.7（同舊 ax.bar width 一致）
+        # 🤖 得兩種顏色（漲/跌）→ 每種顏色砌成**一個** compound Path：path 數由 O(N) 變 6 個
+        #    （1200 根實測 −4 ms/幀）。逐 bar 顏色本来就等於逐方向，冇損失。
+        up_i, dn_i = np.where(c >= o)[0], np.where(c < o)[0]
+        lo_b, hi_b = np.minimum(o, c), np.maximum(o, c)
+
+        def _add(target, mk, fill, **kw):
+            specs = [(mk(i), col) for i, col in ((up_i, C_UP), (dn_i, C_DOWN)) if i.size]
+            if not specs:
+                return
+            cols = [col for _p, col in specs]
+            pc = PathCollection([p for p, _ in specs],
+                                facecolors=cols if fill else "none",
+                                edgecolors="none" if fill else cols, **kw)
+            target.add_collection(pc)
+            self._arts.append(pc)
+
+        _add(ax, lambda i: self._segs_path(x[i], l[i], h[i]), False, linewidths=1.0)
+        _add(ax, lambda i: self._rect_path(x[i], half, lo_b[i], hi_b[i]), True)
+        _add(axv, lambda i: self._rect_path(x[i], half, np.zeros(i.size), v[i]), True, alpha=0.55)
+
+        # 📍 現價水平虛線 + 標注 + hover crosshair：預建，之後只改位置/可見性
+        last_close = float(c[-1])
+        self._arts.append(ax.axhline(last_close, color=C_ACCENT, linewidth=0.9,
+                                     linestyle="--", alpha=0.85))
+        self._tag_txt = ax.text(0.0, last_close, _fmt_price(last_close),
+                                ha="center", va="center", fontsize=8, color="#FFFFFF",
+                                fontweight="bold",
+                                bbox=dict(boxstyle="round,pad=0.25", fc=C_ACCENT, ec="none"))
+        self._arts.append(self._tag_txt)
+        self._cross = ax.axvline(0, color=C_MUTED, linewidth=0.8, linestyle="--",
+                                 alpha=0.8, visible=False)
+        self._arts.append(self._cross)
+        axv.yaxis.set_major_formatter(FuncFormatter(_fmt_volume))
+        # 🤖 刻度文字係每幀最大開支之一（實測 y 標籤 9 → 6 個 = −3 ms/幀）：少而清晰就夠
+        ax.yaxis.set_major_locator(MaxNLocator(self.Y_TICKS, prune='both'))
+        axv.yaxis.set_major_locator(MaxNLocator(3, prune='both'))
+
+    def _apply_view(self):
+        """視窗層：pan/zoom/hover 全部只行呢度 —— limits + 由可見 slice 重算 Y fit + ticks + 現價 tag。"""
+        ax, axv = self.ax, self.axv
         rows_all = self._rows
         n = len(rows_all)
         if n == 0:
-            self.readout.setText("—")
-            self.canvas.draw_idle()
             return
 
         # 🖱️ 視窗範圍（絕對 index 座標）：None = 跟隨最新（原行為）；否則用戶平移/縮放後嘅位置
-        if self._view is not None and self._view[1] > n - 0.5 + 1e-9:
-            self._view = None   # 數據變少咗（新串流 bar 數較少）→ 返跟隨模式
+        # 🤖 動畫進行中唔好碰 `_view`：跟隨模式嘅起點本身 xmax > n-0.5（現價 tag gutter），
+        #    逐幀插值都會撞中呢個 guard → 成段過渡被還原返跟隨（實測：縮到全部數據 = 郁吓唔郁）。
+        #    target 本身已經 clamp 喺当前 n 之內，所以動畫期間可以安全跳過。
+        # 🤖 view 出界（數據變少咗 / 取消過渡留低嘅插值中間態）→ clamp 返入數據範圍、**保留用戶嘅縮放級別**。
+        #    舊做法係整個丟返跟隨模式：用戶會突然被拉返最新 + 換咗尺度（#24 測試暴露）。
+        #    動畫／平滑平移進行中唔碰：跟隨模式嘅起點本身 xmax > n-0.5（現價 tag gutter），逐幀都會撞中。
+        if (self._view is not None and self._anim is None and self._pan_target is None
+                and (self._view[1] > n - 0.5 + 1e-9 or self._view[0] < -0.5 - 1e-9)):
+            self._view = self._clamp_view(self._view, n)
         if self._view is None:
-            m = min(n, self.MAX_DRAW)
-            s = n - m
-            xmin_a, xmax_a = s - 0.6, n - 1 + max(8.0, m * 0.04)   # 右側現價 tag 空間（原行為）
+            xmin_a, xmax_a, s = self._follow_target()              # 右側現價 tag 空間（原行為）
+            tag_x = (xmax_a + n - 1) / 2                           # gutter 中間（原行為）
         else:
             xmin_a, xmax_a = self._view
             s = max(0, int(math.floor(xmin_a)))
+            tag_x = xmax_a - max(2.5, (xmax_a - xmin_a) * 0.04)    # 視窗右緣內側
         e = min(n, int(math.ceil(xmax_a)) + 1)
         if e <= s:   # 防禦：視窗完全出界（理論上唔會發生）→ 返跟隨範圍
             s, e = max(0, n - self.MAX_DRAW), n
             xmin_a, xmax_a = s - 0.6, n - 0.5
-        rows = rows_all[s:e]
-        k = e - s
-        self._s = s
+            tag_x = (xmin_a + xmax_a) / 2
+        self._s = 0    # 🤖 絕對 index 繪畫 → 本地 == 絕對（子类 slice 契約照樣啱）
 
-        x = np.arange(k, dtype=float)
-        o = np.array([r[1] for r in rows], dtype=float)
-        h = np.array([r[2] for r in rows], dtype=float)
-        l = np.array([r[3] for r in rows], dtype=float)
-        c = np.array([r[4] for r in rows], dtype=float)
-        v = np.array([float(r[5]) for r in rows])
-        up_i = np.where(c >= o)[0]
-        dn_i = np.where(c < o)[0]
-
-        # 影線（細線）+ 實體（矩形），按方向分組向量化繪製（只畫可見 slice）
-        ax.vlines(x[up_i], l[up_i], h[up_i], color=C_UP, linewidth=1.0)
-        ax.vlines(x[dn_i], l[dn_i], h[dn_i], color=C_DOWN, linewidth=1.0)
-        body_w = 0.7 if k > 2 else 0.6
-        ax.bar(x[up_i], np.abs(c[up_i] - o[up_i]), bottom=np.minimum(o[up_i], c[up_i]),
-               width=body_w, color=C_UP)
-        ax.bar(x[dn_i], np.abs(c[dn_i] - o[dn_i]), bottom=np.minimum(o[dn_i], c[dn_i]),
-               width=body_w, color=C_DOWN)
-
-        # Y 軸自動 fit 可見範圍（平移去睇舊 bar 時唔會俾全表 min/max 壓扁）
-        lo, hi = float(l.min()), float(h.max())
-        pad = (hi - lo) * 0.06 or abs(hi) * 0.01 or 1.0
-        ax.set_ylim(lo - pad, hi + pad)
-
-        # 📍 現價水平虛線 + 標注：跟隨最新一根 bar 嘅 close；平移/縮放模式下貼住視窗右緣
-        last_close = float(rows_all[-1][4])
-        ax.axhline(last_close, color=C_ACCENT, linewidth=0.9, linestyle="--", alpha=0.85)
-        if self._view is None:
-            tag_x_a = n - 1 + max(8.0, m * 0.04) / 2   # gutter 中間（原行為）
+        ax.set_xlim(xmin_a, xmax_a)
+        if self._y_lock is not None:
+            # 🖱️ #24 拖動／滑行進行中凍結 Y 尺度：邊拖邊 refit = 橫移 + 同時垂直缩放（實測每 25 個
+            #    event 變 0.93–1.05×）→ 成張圖「郁郁下彈下」，呢個先係「平移唔順」嘅主因，唔係幀率。
+            ax.set_ylim(*self._y_lock[0])
+            axv.set_ylim(*self._y_lock[1])
         else:
-            tag_x_a = xmax_a - max(2.5, (xmax_a - xmin_a) * 0.04)   # 視窗右緣內側
-        ax.set_xlim(xmin_a - s, xmax_a - s)
-        ax.text(tag_x_a - s, last_close, _fmt_price(last_close),
-                ha="center", va="center", fontsize=8, color="#FFFFFF", fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.25", fc=C_ACCENT, ec="none"))
+            # Y 軸自動 fit 可見範圍（平移去睇舊 bar 時唔會俾全表 min/max 壓扁）
+            l, h, v = (self._ohlcv[k2] for k2 in 'lhv')
+            lo, hi = float(l[s:e].min()), float(h[s:e].max())
+            pad = (hi - lo) * 0.06 or abs(hi) * 0.01 or 1.0
+            ax.set_ylim(lo - pad, hi + pad)
+            axv.set_ylim(0, (float(v[s:e].max()) or 1.0) * 1.15)
 
-        # 成交量 subplot（同 X 軸）— 只畫可見 slice
-        axv.bar(x, v, width=body_w, color=np.where(c >= o, C_UP, C_DOWN), alpha=0.55)
-        vmax = float(v.max()) or 1.0
-        axv.set_ylim(0, vmax * 1.15)
+        if self._tag_txt is not None:
+            close = float(self._ohlcv['c'][-1])
+            self._tag_txt.set_text(_fmt_price(close))
+            self._tag_txt.set_position((tag_x, close))
 
-        def _vol_fmt(val, _pos):
-            for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
-                if abs(val) >= div:
-                    return f"{val / div:.0f}{suf}"
-            return f"{val:.0f}"
-
-        axv.yaxis.set_major_formatter(FuncFormatter(_vol_fmt))
-
-        # X 軸：整數 index + 稀疏時間標籤（時間刻度由下方 volume 軸帶）— 用絕對 index 取 label
-        tick_i = sorted(set(np.linspace(s, e - 1, min(7, k)).astype(int).tolist()))
-        axv.set_xticks([i - s for i in tick_i])   # 絕對 index → 本地座標（tick_i 係 list，逐個減）
+        # X 軸：整數 index + 稀疏時間標籤（時間刻度由下方 volume 軸帶）— 絕對 index 即座標
+        tick_i = self._view_ticks(xmin_a, xmax_a, n)
+        axv.set_xticks(tick_i)
         axv.set_xticklabels([_short_time(rows_all[i][0]) for i in tick_i], fontsize=8)
         ax.tick_params(labelbottom=False)
 
         # crosshair + readout（無懸停時顯示最新一根）— hover idx 係絕對 index
-        if self._hover_idx is not None and 0 <= self._hover_idx < n:
-            i = self._hover_idx
-            ax.axvline(i - s, color=C_MUTED, linewidth=0.8, linestyle="--", alpha=0.8)
-            self._set_readout(rows_all[i])
+        self._update_hover()
+        i = self._hover_idx
+        self._set_readout(rows_all[i] if i is not None and 0 <= i < n else rows_all[-1])
+
+    def _update_hover(self):
+        """B：crosshair 只改一條預建線嘅 x —— 郁滑鼠唔再觸發任何 artist 重建（舊做法 = full redraw）。"""
+        if self._cross is None:
+            return
+        i = self._hover_idx
+        if i is None or not 0 <= i < len(self._rows):
+            self._cross.set_visible(False)
         else:
-            self._set_readout(rows_all[-1])
-        self.canvas.draw_idle()
+            self._cross.set_visible(True)
+            self._cross.set_xdata([i, i])
 
     def _set_readout(self, row):
         t, o, h, l, c, v = row
@@ -321,15 +543,36 @@ class KlineChart(QWidget):
             f"&nbsp;&nbsp;V {int(v):,}"
         )
 
-    # --- 懸停 / 手勢（拖動平移 · 滾輪縮放 · 右鍵復位） ---------------------------
-    def _view_abs(self):
-        """目前生效嘅視窗範圍（絕對 index 座標）；跟隨模式 = 最後 MAX_DRAW 根 + 右側現價 tag 空間。"""
+    # --- 懸停 / 手勢（拖動平移 · 滾輪縮放 · 右鍵/雙擊復位） -----------------------
+    def _follow_target(self):
+        """跟隨最新嘅生效範圍（絕對 index）：最後 MAX_DRAW 根 + 右側現價 tag 空間。回 (xmin, xmax, s)。"""
         n = len(self._rows)
-        if self._view is None:
-            m = min(n, self.MAX_DRAW)
-            s = n - m
-            return s - 0.6, n - 1 + max(8.0, m * 0.04)
-        return self._view
+        m = min(n, self.MAX_DRAW)
+        s = n - m
+        return s - 0.6, n - 1 + max(8.0, m * 0.04), s
+
+    def _view_abs(self):
+        """目前生效嘅視窗範圍（絕對 index 座標）。"""
+        return self._view if self._view is not None else self._follow_target()[:2]
+
+    @staticmethod
+    def _clamp_view(view, n):
+        """view 平移返入 `[-0.5, n-0.5]`（保留寬度 = 用戶嘅縮放級別）；寬度大過全部數據 → 顯示全部。"""
+        w = view[1] - view[0]
+        if w >= n:
+            return (-0.5, max(n - 0.5, 0.5))
+        xmin = max(-0.5, min(view[0], n - 0.5 - w))
+        return (xmin, xmin + w)
+
+    def _view_ticks(self, xmin_a, xmax_a, n):
+        """可見窗內嘅整數 x 刻度（絕對 index）。
+        🤖 必須 clamp 喺 limits 之內：`set_xticks` 會將出界嘅刻度撐開 axes limits（實測 ±1 根），
+        過渡動畫每幀都俾呢一下抖動拖歪 → 終點永遠收唔到 target（#23）。"""
+        t0 = max(0, int(math.ceil(xmin_a)))
+        t1 = min(n - 1, int(math.floor(xmax_a)))
+        if t1 < t0:
+            return []
+        return sorted(set(np.linspace(t0, t1, min(self.X_TICKS, t1 - t0 + 1)).astype(int).tolist()))
 
     def _on_motion(self, ev):
         if not self._rows or ev.inaxes not in (self.ax, self.axv) or ev.xdata is None:
@@ -341,66 +584,111 @@ class KlineChart(QWidget):
             dx = ev.xdata + self._s - self._drag[0]   # 游標絕對 x 位移（每次 redraw 後 _s 會變，用最新值換算）
             xmin, xmax = self._drag[1] + dx, self._drag[2] + dx
             if w >= n:                    # 視窗闊過全部數據 → 顯示全部
-                self._view = (-0.5, max(n - 0.5, 0.5))
+                target = (-0.5, max(n - 0.5, 0.5))
             elif xmin < -0.5:             # clamp 住數據左緣
-                self._view = (-0.5, -0.5 + w)
+                target = (-0.5, -0.5 + w)
             elif xmax > n - 0.5:          # clamp 住數據右緣
-                self._view = (n - 0.5 - w, n - 0.5)
+                target = (n - 0.5 - w, n - 0.5)
             else:
-                self._view = (xmin, xmax)
+                target = (xmin, xmax)
             self._hover_idx = None
-            self._redraw()
+            now = time.perf_counter()                    # 🖱️ 攞樣算松手嗰陣嘅速度（慣性）
+            self._drag_hist = [(t, xx) for t, xx in self._drag_hist if now - t <= 0.12][-6:]
+            self._drag_hist.append((now, ev.xdata + self._s))
+            self._pan_to(target)                         # 🖱️ #24：設目標，逐幀追近（唔再逐 event 重算 limits/Y/ticks）
             return
-        # hover crosshair：本地 x → 絕對 index
+        # 🖱️ B：hover crosshair —— 只改預建線嘅 x + readout，唔返嚟重建任何 artist
         n = len(self._rows)
         idx = max(0, min(n - 1, int(round(ev.xdata + self._s))))
         if idx != self._hover_idx:
             self._hover_idx = idx
-            self._redraw()
+            self._update_hover()
+            self._set_readout(self._rows[idx])
+            self.canvas.draw_idle()
 
     def _on_leave(self, ev):
         if self._hover_idx is not None:
             self._hover_idx = None
-            self._redraw()
+            self._update_hover()
+            self.canvas.draw_idle()
 
     def _on_press(self, ev):
         if not self._rows or ev.inaxes not in (self.ax, self.axv) or ev.xdata is None:
             return
-        if ev.button == 3:                # 🖱️ 右鍵 → 復位跟隨最新
-            self._view = None
+        if ev.button == 3:                # 🖱️ 右鍵 → 平滑復位跟隨最新
             self._hover_idx = None
-            self._redraw()
+            self._animate_to(self._follow_target()[:2], follow_at_end=True)
+            return
+        if ev.button == 1 and getattr(ev, 'dblclick', False):
+            # 🖱️ 左鍵連擊兩下 → 還原縮放 + 返到最新 K 柱（用戶要求：所有 K 線圖都要有）
+            # 🤖 必須喺開始拖動之前處理：第一次 click 已經設咗 _drag，唔清掉會變到「復位完郁咗一下」
+            self._drag = None
+            self._drag_hist = []
+            self._hover_idx = None
+            self._animate_to(self._follow_target()[:2], follow_at_end=True)
             return
         if ev.button != 1:
             return
+        self._cancel_anim()               # 🖱️ 手郁咗就即刻停返過渡（跟手優先）
+        self._flush_pan()                 # 🖱️ drag 要由實際視窗開始
+        self._drag_hist = []
+        self._lock_y()                    # 🖱️ #24 拖動期間唔再邊拖邊重縮放
         xmin_a, xmax_a = self._view_abs()
         self._drag = (ev.xdata + self._s, xmin_a, xmax_a)
 
     def _on_release(self, ev):
         self._drag = None
+        self._flush_pan()                 # 🖱️ 松手要企喺用戶實際拖到嘅位置，慣性由呢度開始
+        self._inertia()
+        if self._anim is None:            # 🖱️ 冇滑行 → 松手即刻一次過重縮放（有滑行就等滑行完先 refit）
+            self._unlock_y()
+
+    def _inertia(self):
+        """🖱️ 松手後順住拖動方向滑行一段（都係 ease-out）— 拖動先至有「甩」嘅手感，唔係急停。
+        🤖 只係用最近 ≤120 ms 嘅樣本（慢拖 / 停低先至松手 → 速度自然接近 0，唔會滑）。"""
+        now = time.perf_counter()
+        smp = [(t, xx) for t, xx in self._drag_hist if now - t <= 0.12]
+        self._drag_hist = []
+        if len(smp) < 2 or self._view is None:
+            return
+        dt = smp[-1][0] - smp[0][0]
+        if dt <= 0:
+            return
+        v = (smp[-1][1] - smp[0][1]) / dt          # 絕對 index / 秒
+        if abs(v) < 3.0:
+            return
+        xmin, xmax = self._view
+        w = xmax - xmin
+        n = len(self._rows)
+        d = v * 0.20                               # 滑行量 ≈ 200 ms 速度（ease-out 會再衰減）
+        xmin2, xmax2 = xmin + d, xmax + d
+        if xmin2 < -0.5:
+            xmin2, xmax2 = -0.5, -0.5 + w
+        elif xmax2 > n - 0.5:
+            xmin2, xmax2 = n - 0.5 - w, n - 0.5
+        self._animate_to((xmin2, xmax2))
 
     def _on_scroll(self, ev):
         if not self._rows or ev.inaxes not in (self.ax, self.axv) or ev.xdata is None:
             return
         n = len(self._rows)
+        self._flush_pan()                             # 🖱️ 縮放要由實際視窗計，唔係追緊緊嘅位置
+        self._y_lock = None                           # 🖱️ 縮放 = 明確要重縮放 → 解除拖動凍結
         xmin_a, xmax_a = self._view_abs()
         x0 = ev.xdata + self._s                       # 🖱️ 縮放中心 = 游標位置（絕對座標）
         w = max(self.MIN_VIEW, min((xmax_a - xmin_a) * 1.3 ** (-ev.step), self.MAX_VIEW))
+        self._hover_idx = None
         if w >= n:                                    # 已經縮到全部數據 → 顯示全部
-            self._view = (-0.5, max(n - 0.5, 0.5))
-            self._hover_idx = None
-            self._redraw()
+            self._animate_to((-0.5, max(n - 0.5, 0.5)))
             return
         frac = (x0 - xmin_a) / (xmax_a - xmin_a) if xmax_a > xmin_a else 0.5
         xmin2, xmax2 = x0 - frac * w, x0 + (1 - frac) * w
         if xmin2 < -0.5:                              # 縮放後 clamp 返數據範圍內
-            self._view = (-0.5, -0.5 + w)
+            self._animate_to((-0.5, -0.5 + w))
         elif xmax2 > n - 0.5:
-            self._view = (n - 0.5 - w, n - 0.5)
+            self._animate_to((n - 0.5 - w, n - 0.5))
         else:
-            self._view = (xmin2, xmax2)
-        self._hover_idx = None
-        self._redraw()
+            self._animate_to((xmin2, xmax2))          # 🖱️ 平滑縮放（連續滾輪由目前位置接續）
 
 
 # ─────────────────────── DF 結果（下方可折疊窗口） ───────────────────────

@@ -1,10 +1,13 @@
-"""One Gate Page 8 — 指標管理：新增／修改／移除主圖及副圖指標（ticket #19）。
+"""One Gate Page 8 — 指標管理：新增／修改／移除主圖及副圖指標（ticket #19 / #21）。
 
 - **儲存**：gateway/indicators.py IndicatorManager（state_store section 'indicators'）—
   本頁係配置 CRUD UI，唔做計算；K 線頁（kline_page）經同一 manager listener 即時同步。
 - **頂欄**：揀指標類型（INDICATOR_DEFS，名 = acronym 語言中立）→ 位置 combo（只列該類型准入位置）
   → 參數 SpinBox（range 由 ParamSpec）→ ＋ 新增；揀中表格行 → 頂欄填入（編輯模式）→ ✓ 套用修改 / 🗑 移除所選。
-- **表格**：顯示（checkbox 即時 set_enabled）/ 指標 / 位置 / 參數摘要。
+- **表格**：顯示（checkbox 即時 set_enabled）/ 指標 / **說明**（一行 desc，跟語言；完整用法喺 tooltip）/ 位置 / 參數摘要。
+- **可摺疊詳情**（`ind_detail_toggle`，預設收起）：展開即顯示所選類型嘅完整用法 + **每個參數一行解釋**
+  （`ind_detail_note_<key>`）。🤖 詳情永遠跟頂欄（= 編輯中／準備新增嘅類型），唔跟表格所選行 —
+  因為新增時根本未有行；揀行會經 `_fill_editor` 轉到頂欄，所以兩者永遠一致。
 - **跨頁同步**：manager listener（origin 過濾）— K 線頁撳開關掣 → 本頁表格即時打勾；本頁改 → K 線頁即時生效。
 - **底部**：指標總數 / 顯示中 + status（set status 必須喺 refresh 之後 — #10/#11 教訓）。
 - **Theme/i18n**：照其他頁 recipe。
@@ -29,8 +32,8 @@ import gateway.theme as theme_mod  # noqa: E402
 from gateway import indicators  # noqa: E402 — 指標單一事實來源
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 
-COLUMNS = ('enabled', 'name', 'position', 'params', 'id')
-HEAD_KEYS = {'enabled': 'ind_head_enabled', 'name': 'ind_head_name',
+COLUMNS = ('enabled', 'name', 'desc', 'position', 'params', 'id')
+HEAD_KEYS = {'enabled': 'ind_head_enabled', 'name': 'ind_head_name', 'desc': 'ind_head_desc',
              'position': 'ind_head_position', 'params': 'ind_head_params', 'id': 'id'}
 _POS_KEYS = {'main': 'ind_pos_main', 'sub': 'ind_pos_sub'}
 
@@ -62,18 +65,26 @@ class _IndModel(QAbstractTableModel):
             return None
         e = self._rows[index.row()]
         col = COLUMNS[index.column()]
+        if col == 'enabled' and role == Qt.CheckStateRole:
+            return Qt.Checked if e['enabled'] else Qt.Unchecked
+        d = indicators.INDICATOR_DEFS[e['def']]
+        if role == Qt.ToolTipRole and col in ('name', 'desc'):
+            # 🤖 列表只顯示一行描寫 → 完整用法（點樣用）放 tooltip
+            return '%s\n\n%s：%s' % (t(d.desc_key, self._page._lang),
+                                     t('ind_detail_use', self._page._lang),
+                                     t(d.usage_key, self._page._lang))
         if role == Qt.DisplayRole:
             if col == 'enabled':
                 return None
             if col == 'name':
-                return indicators.INDICATOR_DEFS[e['def']].label
+                return d.label
+            if col == 'desc':
+                return t(d.desc_key, self._page._lang)
             if col == 'position':
                 return t(_POS_KEYS[e['position']], self._page._lang)
             if col == 'params':
-                return indicators._params_summary(indicators.INDICATOR_DEFS[e['def']], e['params'])
+                return indicators._params_summary(d, e['params'])
             return e['id']
-        if col == 'enabled' and role == Qt.CheckStateRole:
-            return Qt.Checked if e['enabled'] else Qt.Unchecked
         return None
 
     def flags(self, index):
@@ -117,8 +128,10 @@ class IndicatorsPage(QWidget):
         self.def_combo = QComboBox()
         self.def_combo.setObjectName('ind_def_combo')
         self._def_keys = list(indicators.INDICATOR_DEFS)
-        for k in self._def_keys:
-            self.def_combo.addItem(indicators.INDICATOR_DEFS[k].label)
+        for i, k in enumerate(self._def_keys):
+            d = indicators.INDICATOR_DEFS[k]
+            self.def_combo.addItem(d.label)
+            self.def_combo.setItemData(i, t(d.desc_key, self._lang), Qt.ToolTipRole)
         top.addWidget(self.def_combo)
         self.pos_combo = QComboBox()
         self.pos_combo.setObjectName('ind_pos_combo')
@@ -148,6 +161,24 @@ class IndicatorsPage(QWidget):
         btns.addWidget(self.remove_btn)
         btns.addStretch(1)
         v.addLayout(btns)
+
+        # ── 可摺疊詳情（預設收起 = 只有一行掣；展開 = 完整用法 + 每個參數一行）──
+        self.detail_btn = QPushButton(t('ind_detail_show', self._lang))
+        self.detail_btn.setObjectName('ind_detail_toggle')   # E2E hook
+        self.detail_btn.setProperty('og', 'indbtn')
+        self.detail_btn.clicked.connect(self._toggle_detail)
+        v.addWidget(self.detail_btn)
+        self.detail_panel = QWidget()
+        self.detail_panel.setObjectName('ind_detail_panel')
+        self.detail_layout = QVBoxLayout(self.detail_panel)
+        self.detail_layout.setContentsMargins(6, 4, 6, 4)
+        self.detail_layout.setSpacing(2)
+        self.detail_desc = self._detail_lbl('ind_detail_desc', 'inddesc')
+        self.detail_usage = self._detail_lbl('ind_detail_usage', 'indusage')
+        self._detail_head = self._detail_lbl('ind_detail_head', 'indhead')
+        self._detail_notes = {}
+        self.detail_panel.setVisible(False)
+        v.addWidget(self.detail_panel)
 
         # ── 表格（單選行 → 編輯模式；enabled 欄 checkbox 即時生效）──
         self.model = _IndModel(self)
@@ -219,6 +250,35 @@ class IndicatorsPage(QWidget):
             self._param_spins[p.key] = sp
             self._param_lbls[p.key] = lbl
         self.param_row.addStretch(1)
+        self._rebuild_detail(d)
+
+    # ── 可摺疊詳情：一行描寫 + 完整用法 + 每個參數一行解釋（ticket #21）──
+    def _detail_lbl(self, obj_name, prop):
+        lbl = QLabel()
+        lbl.setObjectName(obj_name)
+        lbl.setProperty('og', prop)
+        lbl.setWordWrap(True)
+        self.detail_layout.addWidget(lbl)
+        return lbl
+
+    def _toggle_detail(self):
+        open_it = not self.detail_panel.isVisible()
+        self.detail_panel.setVisible(open_it)
+        self.detail_btn.setText(t('ind_detail_hide' if open_it else 'ind_detail_show', self._lang))
+
+    def _rebuild_detail(self, d):
+        """跟頂欄所選類型重建詳情（每個參數一行 → objectName ind_detail_note_<key>）。"""
+        lang = self._lang
+        self.detail_desc.setText('%s %s：%s' % (d.label, t('ind_detail_desc', lang), t(d.desc_key, lang)))
+        self.detail_usage.setText('%s：%s' % (t('ind_detail_use', lang), t(d.usage_key, lang)))
+        self._detail_head.setText(t('ind_detail_params', lang))
+        for w in self._detail_notes.values():
+            w.setParent(None)
+        self._detail_notes = {}
+        for p in d.params:
+            lbl = self._detail_lbl('ind_detail_note_%s' % p.key, 'indnote')   # E2E hook
+            lbl.setText('· %s：%s' % (t(p.label_key, lang), t(p.note_key, lang)))
+            self._detail_notes[p.key] = lbl
 
     def _editor_params(self):
         return {k: sp.value() for k, sp in self._param_spins.items()}
@@ -286,8 +346,9 @@ class IndicatorsPage(QWidget):
     def _configure_columns(self):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
-        hdr.setStretchLastSection(True)
-        widths = {0: 60, 1: 110, 2: 90, 3: 160, 4: 90}
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(COLUMNS.index('desc'), QHeaderView.Stretch)   # 一行描寫用晒剩返嘅寬度
+        widths = {0: 60, 1: 110, 3: 90, 4: 160, 5: 90}
         for col, w in widths.items():
             self.table.setColumnWidth(col, w)
 
@@ -317,8 +378,12 @@ class IndicatorsPage(QWidget):
         self.add_btn.setText(t('ind_add', lang))
         self.save_btn.setText(t('ind_save', lang))
         self.remove_btn.setText(t('ind_remove', lang))
-        self._rebuild_param_row()   # 位置/參數 label 跟語言
-        self._refresh()             # headerData / position / counts 全部跟語言重建
+        self.detail_btn.setText(t('ind_detail_hide' if self.detail_panel.isVisible()
+                                  else 'ind_detail_show', lang))
+        for i, k in enumerate(self._def_keys):   # 類型 combo tooltip（一行描寫）跟語言
+            self.def_combo.setItemData(i, t(indicators.INDICATOR_DEFS[k].desc_key, lang), Qt.ToolTipRole)
+        self._rebuild_param_row()   # 位置/參數 label + 詳情面板 跟語言
+        self._refresh()             # headerData / desc / position / counts 全部跟語言重建
 
 
 _PAGE_QSS = """
@@ -339,6 +404,10 @@ QTableView#ind_table { background-color: $surface; alternate-background-color: $
     selection-background-color: $accent; selection-color: #FFFFFF; }
 QHeaderView::section { background-color: $card; color: $muted; border: 1px solid $border;
     padding: 4px; font-weight: bold; }
+QWidget#ind_detail_panel { background-color: $card; border: 1px solid $border; border-radius: 4px; }
+QLabel[og="inddesc"], QLabel[og="indusage"] { color: $text; font-size: 12px; }
+QLabel[og="indhead"] { color: $muted; font-size: 12px; font-weight: bold; }
+QLabel[og="indnote"] { color: $muted; font-size: 11px; }
 QLabel#ind_counts, QLabel#ind_status { color: $muted; font-size: 11px; }
 """
 

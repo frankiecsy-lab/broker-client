@@ -53,6 +53,13 @@ def pump(n=40):
         app.processEvents()
 
 
+def settle(ms=360):
+    """等 KlineChart 嘅過渡動畫（#23 `_animate_to`，ANIM_MS=220ms）行完 —— QTimer 要真時鐘 + event loop。"""
+    from PySide6.QtTest import QTest
+    QTest.qWait(ms)
+    pump()
+
+
 def make_rows(n=400, seed=7):
     """合成 K 線 rows（trend + noise；格式同 set_bars 契約）。"""
     rng = np.random.default_rng(seed)
@@ -204,10 +211,37 @@ check('改 period → 重算 +1 且陣列唔同', len(calls) == 2 and not np.all
 chart._view = None
 chart._redraw()
 axp = chart._ind_axis[atr_id]
+# 🖱️ #23：scroll / 復位 而家一律經 `_animate_to`（ease-out）→ 手勢只「起過渡」，`_view` 要等插值行完先變
 chart._on_scroll(types.SimpleNamespace(inaxes=axp, xdata=100.0, step=1, button=1, ydata=5.0))
-check('指標 panel 上面 scroll/右鍵/hover 手勢生效', chart._view is not None)
+check('指標 panel 上面 scroll 手勢生效（起咗過渡、target 有值）', chart._anim is not None)
+settle()
+check('過渡行完 → 縮放生效（_view 有值）', chart._view is not None)
 chart._on_press(types.SimpleNamespace(inaxes=axp, xdata=100.0, button=3, ydata=5.0))
-check('panel 上右鍵 → 復位跟隨', chart._view is None)
+check('panel 上右鍵 → 起復位過渡（末參數 = 終止後返跟隨）', chart._anim is not None and chart._anim[-1] is True)
+settle()
+check('復位過渡行完 → 返跟隨（_view is None）', chart._view is None)
+
+# 用戶要求：所有 K 線圖左鍵雙擊 = 還原縮放 + 返到最新 K 柱（parent 實作，子类自動繼承）
+chart._on_scroll(types.SimpleNamespace(inaxes=chart.ax, xdata=100.0, step=1, button=1, ydata=5.0))
+settle()
+zoomed = chart._view
+chart._on_press(types.SimpleNamespace(inaxes=chart.ax, xdata=100.0, button=1, ydata=5.0, dblclick=True))
+check('主圖左鍵雙擊 → 先縮放過（_view 有值）再復位返跟隨最新',
+      zoomed is not None and chart._anim is not None and chart._anim[-1] is True)
+settle()
+check('雙擊過渡行完 → 返跟隨最新', chart._view is None)
+chart._on_scroll(types.SimpleNamespace(inaxes=axp, xdata=100.0, step=1, button=1, ydata=5.0))
+settle()
+zoomed2 = chart._view
+chart._on_press(types.SimpleNamespace(inaxes=axp, xdata=100.0, button=1, ydata=5.0, dblclick=True))
+check('指標 panel 上左鍵雙擊一樣有效（子类 inaxes 改寫覆蓋到雙擊）',
+      zoomed2 is not None and chart._anim is not None)
+settle()
+check('panel 雙擊過渡行完 → 返跟隨', chart._view is None)
+chart._on_press(types.SimpleNamespace(inaxes=chart.ax, xdata=100.0, button=1, ydata=5.0))
+chart._on_press(types.SimpleNamespace(inaxes=chart.ax, xdata=100.0, button=1, ydata=5.0, dblclick=False))
+check('單擊（dblclick=False）唔會復位 — 照樣可以拖動', chart._view is None and chart._drag is not None)
+chart._on_release(types.SimpleNamespace(inaxes=chart.ax, xdata=100.0, button=1, ydata=5.0))
 
 ok, _, macd_item = mgr.add('macd', 'sub', {}, origin='t')
 chart._redraw()
@@ -305,6 +339,7 @@ print('── Part 7: 指標管理頁 ──')
 state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state4.json'
 ind.reset_manager_for_test()
 from PySide6.QtCore import Qt  # noqa: E402
+from gateway.pages import indicators_page as ipage_mod  # noqa: E402
 from gateway.pages.indicators_page import IndicatorsPage  # noqa: E402
 
 ipage = IndicatorsPage()
@@ -401,19 +436,81 @@ axes0 = len(chart9.canvas.figure.axes)
 ok_add = [mgr9.add(k, 'main', {'strength': 0.3, 'confirm': 5, 'sweep': 3, 'max_zones': 50}, origin='t')[0]
           for k in ('ob', 'fvg', 'vob')]
 chart9._redraw()
-# 每個指標 bull / bear 各一個 fill_between（邊一邊冇區塊就唔畫）→ 期望數量按可見 slice 嘅 mask 計
+def exp_boxes(top, bot):
+    """獨立實作（唔 reuse `_zone_boxes`）：mask 連續段內再按 level 變化切段 → 方塊數。
+    呢個先係 `_plot_zones` 嘅契約：每個方塊一個 fill（重疊區塊各自獨立，唔係一大片）。"""
+    cnt, i, n = 0, 0, top.shape[0]
+    while i < n:
+        if np.isnan(top[i]) or np.isnan(bot[i]):
+            i += 1
+            continue
+        cnt += 1
+        j = i + 1
+        while j < n and not (np.isnan(top[j]) or np.isnan(bot[j])) \
+                and top[j] == top[i] and bot[j] == bot[i]:
+            j += 1
+        i = j
+    return cnt
+
+
 k9 = len(rows) - chart9._s
 xl0, xl1 = chart9.ax.get_xlim()
 i0, i1 = max(0, int(np.floor(xl0))), min(k9, int(np.ceil(xl1)) + 1)
-exp = sum(1 for e in mgr9.items() if e['def'] in ('ob', 'fvg', 'vob')
-          for tk, bk in (('bull_top', 'bull_bottom'), ('bear_top', 'bear_bottom'))
-          if (~np.isnan(chart9._ind_cache['full'][e['id']][tk][chart9._s + i0:chart9._s + i1])
-              & ~np.isnan(chart9._ind_cache['full'][e['id']][bk][chart9._s + i0:chart9._s + i1])).any())
-check(f'add ob/fvg/vob → 主圖多 {exp} 個 PolyCollection（每個指標 bull/bear 各一）+ axes 唔變（main 唔砌 panel）',
-      all(ok_add) and exp >= 3 and len(chart9.ax.collections) == col0 + exp
+_per_dir = [exp_boxes(chart9._ind_cache['full'][e['id']][tk][chart9._s + i0:chart9._s + i1],
+                      chart9._ind_cache['full'][e['id']][bk][chart9._s + i0:chart9._s + i1])
+            for e in mgr9.items() if e['def'] in ('ob', 'fvg', 'vob')
+            for tk, bk in (('bull_top', 'bull_bottom'), ('bear_top', 'bear_bottom'))]
+exp, exp_dirs = sum(_per_dir), sum(1 for n in _per_dir if n)   # 🤖 #23：同方向合併成一個 PathCollection
+from matplotlib.path import Path as _MPath  # noqa: E402  🤖 #23：方塊 = compound Path 入面嘅 sub-path（CLOSEPOLY 計）
+def _n_rects(cols):
+    return sum(p.codes.tolist().count(_MPath.CLOSEPOLY)
+               for c in cols for p in c.get_paths())
+
+
+def _quads(p):
+    """compound Path → 每個 sub-path 嘅頂點清單。繪畫契約：5 點、尾點 == 起點 = **閉合四邊形**
+    （CLOSEPOLY 唔會用自己嗰個頂點 → 4 點會變三角形，用戶抓到 OB 變楔形）。"""
+    subs, cur = [], []
+    for v, c in zip(p.vertices, p.codes):
+        if c == _MPath.MOVETO:
+            if cur:
+                subs.append(cur)
+            cur = [v]
+        else:
+            cur.append(v)
+    if cur:
+        subs.append(cur)
+    return subs
+
+
+def _all_quads(cols):
+    q = [s for c in cols for p in c.get_paths() for s in _quads(p)]
+    return q, all(len(s) == 5 and np.allclose(s[0], s[-1])
+                  and len({tuple(v) for v in s[:-1]}) == 4 for s in q)
+check(f'add ob/fvg/vob → 主圖多 {exp_dirs} 個 PathCollection（同方向合併）+ 方塊 sub-path 總數 == {exp}'
+      f'（逐個獨立，繪畫契約冇變）+ axes 唔變（main 唔砌 panel）',
+      all(ok_add) and exp >= 3 and len(chart9.ax.collections) == col0 + exp_dirs
+      and _n_rects(chart9.ax.collections[col0:]) == exp
       and len(chart9.canvas.figure.axes) == axes0)
 paths = chart9.ax.collections[-1].get_paths()
 check('區塊 path 非空（真有區塊，唔係空 collection）', len(paths) > 0 and len(paths[0].vertices) >= 3)
+
+# 用戶反映 VOB「連續、唔係獨立方塊」：同向重疊區塊喺陣列入面係較新者覆蓋（level 中途跳），
+# 繪畫必須喺 level 變化位切段 → 兩個獨立方塊（每塊一個 fill_between，各自 ±0.5 覆蓋自己嗰啲根）
+from matplotlib.figure import Figure  # noqa: E402
+_t2 = np.array([10.0, 10.0, 10.0, 11.0, 11.0, np.nan])
+_b2 = np.array([9.0, 9.0, 9.0, 10.2, 10.2, np.nan])
+_axp = Figure().add_subplot(111)
+ind._plot_zones(_axp, np.arange(6.0, dtype=float),
+                {'bull_top': _t2, 'bull_bottom': _b2,
+                 'bear_top': np.full(6, np.nan), 'bear_bottom': np.full(6, np.nan)})
+_p2 = [p for c in _axp.collections for p in c.get_paths()]
+_xs = sorted({float(v) for p in _p2 for v in p.vertices[:, 0]})
+check('同向重疊區塊 → 切成 2 個獨立方塊（各自 ±0.5 覆蓋自己嗰啲根，唔係一大片）',
+      _n_rects(_axp.collections) == 2 and all(len(p.vertices) >= 10 for p in _p2)
+      and _xs == [-0.5, 2.5, 4.5])
+_q2, _ok_q2 = _all_quads(_axp.collections)
+check('方塊真係閉合四邊形（4 個唔同角 + 尾點返起點），唔係三角形', len(_q2) == 2 and _ok_q2)
 bad = []
 for e in mgr9.items():
     if e['def'] in ('ob', 'fvg', 'vob'):
@@ -440,20 +537,438 @@ labels = {ipage9.def_combo.itemText(i) for i in range(ipage9.def_combo.count())}
 check('管理頁 def combo 見到 OB / FVG / VOB', {'OB', 'FVG', 'VOB'} <= labels)
 ipage9.def_combo.setCurrentIndex(ipage9._def_keys.index('vob'))
 pump()
-check('揀 VOB → 位置只准 main + 參數欄砌到 5 個（含 sweep）',
+check('揀 VOB → 位置只准 main + 參數欄砌到 8 個（含 sweep / max_size / pen / supersede）',
       ipage9.pos_combo.count() == 1 and ipage9.pos_combo.currentData() == 'main'
-      and set(ipage9._param_spins) == {'period', 'strength', 'confirm', 'sweep', 'max_zones'})
+      and set(ipage9._param_spins) == {'period', 'strength', 'confirm', 'sweep',
+                                       'max_size', 'pen', 'supersede', 'max_zones'})
 ipage9._param_spins['confirm'].setValue(5)
 ipage9.add_btn.click()
 pump()
-check('新增 VOB → 表格 3 行 + 參數摘要 14/1/5/5/15',
+_CI = {c: i for i, c in enumerate(ipage_mod.COLUMNS)}   # 🤖 永遠按欄名搵欄，唔 hardcode index
+check('新增 VOB → 表格 3 行 + 參數摘要 14/1/5/5/3/50/1/15（含 max_size/pen/supersede 預設）',
       ipage9.model.rowCount() == 3
-      and ipage9.model.data(ipage9.model.index(2, 1)) == 'VOB'
-      and ipage9.model.data(ipage9.model.index(2, 3)) == '14/1/5/5/15')
+      and ipage9.model.data(ipage9.model.index(2, _CI['name'])) == 'VOB'
+      and ipage9.model.data(ipage9.model.index(2, _CI['params'])) == '14/1/5/5/3/50/1/15')
 ipage9.retranslate('en')
 pump()
 check('ICT 參數名三語（label + i18n）',
       _t('ind_p_confirm', 'en') == 'Confirm bars' and 'Confirm bars' in ipage9._param_lbls['confirm'].text())
+
+# ══ Part 10：ICT 全套繪畫 + 一行描寫 / 可摺疊詳情（ticket #21）═════════════
+print('\n── Part 10: ICT 全套繪畫 + 說明欄 / 可摺疊詳情 ──')
+NEW = ('brk', 'bpr', 'bos', 'choch', 'liq', 'eqhl', 'pd', 'ote')
+
+
+def exp_artists(def_key, full, inst_id, s, i0, i1):
+    """按 _PLOTTERS 嘅契約算期望 artists 增量（collections, lines, texts）—
+    用嚟斷言「真係砌出嘢」，唔係得個空 collection。"""
+    sl = {k: v[s + i0:s + i1] for k, v in full[inst_id].items()}
+    c = ln = tx = 0
+    if def_key in ('ob', 'fvg', 'vob', 'brk', 'bpr', 'eqhl', 'ote'):
+        for tk, bk in (('bull_top', 'bull_bottom'), ('bear_top', 'bear_bottom')):
+            c += 1 if exp_boxes(sl[tk], sl[bk]) else 0   # 🤖 #23：同方向一個 PathCollection（方塊 = sub-path）
+    elif def_key in ('bos', 'choch', 'liq'):
+        for pk, mk in (('bull_top', 'mark_bull'), ('bear_top', 'mark_bear')):
+            if (~np.isnan(sl[pk])).any():
+                c += 1                                   # hlines → LineCollection
+                mm = ~np.isnan(sl[mk])
+                if mm.any():
+                    ln += 1                              # 三角標記 → 一條 line
+                    if def_key in ('bos', 'choch'):
+                        tx += int(mm.sum())              # tag 文字
+    elif def_key == 'pd':
+        if (~np.isnan(sl['range_hi']) & ~np.isnan(sl['range_lo'])).any():
+            c, ln = c + 1, ln + 3                        # 區間填充 + hi/lo/均衡 三條線
+    return c, ln, tx
+
+
+state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state7.json'
+ind.reset_manager_for_test()
+mgr10 = ind.get_manager()
+chart10 = ind.IndicatorKlineChart()
+chart10.set_indicator_manager(mgr10)
+chart10.set_bars(rows)
+chart10._redraw()
+for e in mgr10.items():                       # 🤖 MAX_ITEMS=6 → 逐個加逐個移除，基準永遠係清空後嘅狀態
+    mgr10.remove(e['id'], origin='t')
+chart10._redraw()
+axes0 = len(chart10.canvas.figure.axes)       # 清晒 seed（連 sub panel 都冇）先取基準
+base = (len(chart10.ax.collections), len(chart10.ax.lines), len(chart10.ax.texts))
+bad10, drew = [], []
+for k in NEW:
+    ok_add, _msg, item = mgr10.add(k, 'main', {p.key: p.default for p in ind.INDICATOR_DEFS[k].params},
+                                   origin='t')
+    chart10._redraw()
+    if not ok_add:
+        bad10.append(k + ':add')
+        continue
+    got = (len(chart10.ax.collections), len(chart10.ax.lines), len(chart10.ax.texts))
+    kk = len(rows) - chart10._s
+    xl0, xl1 = chart10.ax.get_xlim()
+    i0, i1 = max(0, int(np.floor(xl0))), min(kk, int(np.ceil(xl1)) + 1)
+    exp = exp_artists(k, chart10._ind_cache['full'], item['id'], chart10._s, i0, i1)
+    if got != tuple(b + e for b, e in zip(base, exp)):
+        bad10.append('%s:畫咗 %s ≠ 期望 %s' % (k, got, exp))
+    if sum(exp) == 0:
+        bad10.append(k + ':冇嘢畫')
+    drew.append('%s=%s' % (k, exp))
+    mgr10.remove(item['id'], origin='t')
+check('8 個新 ICT 逐個加入 → 主圖 artists 增量 == 按契約算出嘅期望（hlines/三角/tag/帶）', not bad10)
+if bad10:
+    print('     ⚠️ ' + '; '.join(bad10))
+print('     ℹ️ ' + ' '.join(drew))
+check('全部喺主圖疊加 → 唔砌新 panel（axes 數量唔變）', len(chart10.canvas.figure.axes) == axes0)
+check('水平位真係畫到圖上（LineCollection path 非空）',
+      any(len(c.get_paths()) > 0 for c in chart10.ax.collections if hasattr(c, 'get_paths')))
+check('BOS/CHoCH tag 文字出現喺 ax.texts', len(chart10.ax.texts) > 0)
+
+# 管理頁：說明欄 + 可摺疊詳情
+state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state8.json'
+ind.reset_manager_for_test()
+ip10 = IndicatorsPage()
+ip10.show()
+pump()
+check('表格多咗「說明」欄（表頭三語 + 欄數 = COLUMNS）',
+      ip10.model.columnCount() == len(ipage_mod.COLUMNS)
+      and ip10.model.headerData(ipage_mod.COLUMNS.index('desc'), Qt.Horizontal) == '說明')
+ip10.def_combo.setCurrentIndex(ip10._def_keys.index('bos'))
+pump()
+ip10.add_btn.click()
+pump()
+di = ipage_mod.COLUMNS.index('desc')
+row_b = next(i for i in range(ip10.model.rowCount())
+             if ip10.model.data(ip10.model.index(i, _CI['name'])) == 'BOS')   # seed 行喺前面 → 按名搵行
+check('新增 BOS → 說明欄有一行描寫（跟語言）+ tooltip 帶完整用法',
+      ip10.model.data(ip10.model.index(row_b, di)) == _t('ind_desc_bos', 'zh_hk')
+      and _t('ind_use_bos', 'zh_hk') in (ip10.model.data(ip10.model.index(row_b, di), Qt.ToolTipRole) or ''))
+check('詳情面板預設收起', not ip10.detail_panel.isVisible() and '▸' in ip10.detail_btn.text())
+ip10.detail_btn.click()
+pump()
+check('展開 → 顯示完整用法 + 每個參數一行解釋（ind_detail_note_<key>）',
+      ip10.detail_panel.isVisible()
+      and _t('ind_use_bos', 'zh_hk') in ip10.detail_usage.text()
+      and set(ip10._detail_notes) == {'swing', 'max_levels'}
+      and ip10._detail_notes['swing'].text() == '· %s：%s' % (_t('ind_p_swing', 'zh_hk'),
+                                                              _t('ind_n_swing', 'zh_hk')))
+ip10.detail_btn.click()
+pump()
+check('再撳 → 收起（只返返一行掣）', not ip10.detail_panel.isVisible() and '▸' in ip10.detail_btn.text())
+ip10.def_combo.setCurrentIndex(ip10._def_keys.index('ote'))
+pump()
+check('轉類型 → 詳情即時跟（OTE 帶 fib_lo/fib_hi 解釋）',
+      set(ip10._detail_notes) == {'swing', 'fib_lo', 'fib_hi', 'max_zones'}
+      and _t('ind_desc_ote', 'zh_hk') in ip10.detail_desc.text())
+ip10.detail_btn.click()
+pump()
+ip10.retranslate('en')
+pump()
+check('三語：表頭/說明欄跟語言 + 詳情跟頂欄類型（而家 = OTE）嘅英文用法/參數解釋',
+      ip10.model.headerData(di, Qt.Horizontal) == 'Description'
+      and ip10.model.data(ip10.model.index(row_b, di)) == _t('ind_desc_bos', 'en')
+      and _t('ind_use_ote', 'en') in ip10.detail_usage.text()
+      and _t('ind_n_swing', 'en') in ip10._detail_notes['swing'].text())
+check('K線頁開關掣 tooltip 帶一行描寫（三語）',
+      _t('ind_desc_ob', 'en') in KlinePage._ind_tooltip(ind.INDICATOR_DEFS['ob'], 'main', 'en')
+      and _t('ind_pos_main', 'zh_cn') in KlinePage._ind_tooltip(ind.INDICATOR_DEFS['ob'], 'main', 'zh_cn'))
+
+# ══ Part 11：主圖 Y-fit 距離閘（用戶：「有啲 VOB 獨立出嚟，同 K 線冇連接同關係」）════
+print('\n── Part 11: 主圖 Y-fit 距離閘（離價好遠嘅區塊唔撐大 Y 軸）──')
+kk11 = len(rows) - chart10._s
+xl0, xl1 = chart10.ax.get_xlim()
+j0, j1 = max(0, int(np.floor(xl0))), min(kk11, int(np.ceil(xl1)) + 1)
+vis = rows[chart10._s + j0:chart10._s + j1]
+cl_v, ch_v = min(r[3] for r in vis), max(r[2] for r in vis)
+FAR_LVL = ch_v + 10.0 * (ch_v - cl_v)          # 遠到離譜：Y 軸唔應該為佢擴展
+NEAR_LVL = ch_v + 0.1 * (ch_v - cl_v)          # 喺可見範圍附近（< FIT_PAD）：照樣要 fit 到
+
+
+def _flat_zone(lvl):
+    """临时 def：整條可見窗都有一個恒定價位嘅「區塊」（模擬一個永遠冇被消耗嘅歷史 OB）。"""
+    def _c(ohlc, params):
+        n = len(ohlc['c'])
+        return {'bull_top': np.full(n, lvl), 'bull_bottom': np.full(n, lvl - 0.2),
+                'bear_top': np.full(n, np.nan), 'bear_bottom': np.full(n, np.nan)}
+    return _c
+
+
+for _k, _lv in (('farzone', FAR_LVL), ('nearzone', NEAR_LVL)):
+    ind.INDICATOR_DEFS[_k] = ind.IndicatorDef(_k, _k.upper(), ('main',), (), _flat_zone(_lv), 0)
+    ind._PLOTTERS[_k] = ind._plot_zones
+_old_far = ind.FAR_OVERLAYS
+ind.FAR_OVERLAYS = frozenset(_old_far | {'farzone', 'nearzone'})   # 🤖 臨時 def 都要入閘，先至模擬到真 ICT 疊加
+chart10._redraw()
+base_y = tuple(chart10.ax.get_ylim())
+_cols0 = len(chart10.ax.collections)   # 🤖 #22 之後蠟燭本身都係 collection → 必須用增量，唔准淨係睇 >0
+ok_f, _m, it_f = mgr10.add('farzone', 'main', {}, origin='t')
+chart10._redraw()
+y_far = tuple(chart10.ax.get_ylim())
+check('遠距離區塊（%0.1f，離可見 K 線 10 個範圍）照樣畫出方塊（唔係唔畫）' % FAR_LVL,
+      ok_f and len(chart10.ax.collections) == _cols0 + 1)   # 恒定 level + 成窗連續 → 恰好 1 個方塊
+check('…但主圖 Y 軸範圍逐個位唔變（唔撐大、唔擠細 K 線）', y_far == base_y)
+ok_n, _m, it_n = mgr10.add('nearzone', 'main', {}, origin='t')
+chart10._redraw()
+check('近距離區塊（可見範圍 +10%，喺 FIT_PAD 內）仍然參與 Y-fit',
+      ok_n and chart10.ax.get_ylim()[1] >= NEAR_LVL)
+mgr10.remove(it_n['id'], origin='t')
+ind.FAR_OVERLAYS = frozenset()                 # 對比：閘關咗 → 同一個 farzone 就撐大 Y 軸
+chart10._redraw()
+check('閘關咗（FAR_OVERLAYS 空）→ 同樣嘅 farzone 確實會撐大 Y 軸（證明係距離閘做功，唔係數據冇變化）',
+      chart10.ax.get_ylim()[1] >= FAR_LVL)
+ind.FAR_OVERLAYS = _old_far
+mgr10.remove(it_f['id'], origin='t')
+for _k in ('farzone', 'nearzone'):
+    ind.INDICATOR_DEFS.pop(_k, None)
+    ind._PLOTTERS.pop(_k, None)
+chart10._redraw()
+check('移除臨時 def 之後 Y 軸還原（冇殘留）', tuple(chart10.ax.get_ylim()) == base_y)
+
+# ══ Part 12：兩層繪畫（#22 縮放/平移順暢）════════════════════════════════════
+print('\n── Part 12: 兩層繪畫（pan·zoom 唔重建 artist · hover 唔 full redraw）──')
+state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state12.json'
+ind.reset_manager_for_test()
+mgr12 = ind.get_manager()
+ch12 = ind.IndicatorKlineChart()
+ch12.set_indicator_manager(mgr12)
+ch12.set_bars(rows)
+mgr12.add('ob', 'main', {}, origin='t')
+ch12._redraw()
+ids0 = [id(a) for a in ch12._arts]          # 靜態層（全部 bar = 3 個 collection + 現價線/tag/crosshair）
+xl0, yl0 = ch12.ax.get_xlim(), ch12.ax.get_ylim()
+ch12._on_scroll(types.SimpleNamespace(inaxes=ch12.ax, xdata=200.0, step=1, button=1, ydata=5.0))
+ch12._on_press(types.SimpleNamespace(inaxes=ch12.ax, xdata=200.0, button=1, ydata=5.0))
+ch12._on_motion(types.SimpleNamespace(inaxes=ch12.ax, xdata=150.0, button=1, ydata=5.0))
+ch12._on_release(types.SimpleNamespace(inaxes=ch12.ax, xdata=150.0, button=1, ydata=5.0))
+xl1, yl1 = ch12.ax.get_xlim(), ch12.ax.get_ylim()
+_v0, _v1 = max(0, int(np.ceil(xl1[0]))), min(len(rows), int(np.floor(xl1[1])) + 1)
+lo_v = min(r[3] for r in rows[_v0:_v1])
+hi_v = max(r[2] for r in rows[_v0:_v1])
+check('pan+zoom：xlim 郁咗 + Y fit 跟住可見 slice（包住可見高低、同之前唔同），但靜態層 artist 逐個同一個物件',
+      xl1 != xl0 and yl1 != yl0 and yl1[0] <= lo_v and yl1[1] >= hi_v
+      and [id(a) for a in ch12._arts] == ids0 and not ch12._static_dirty)
+_xs = [float(v) for a in ch12._ind_artists if hasattr(a, 'get_paths')
+       for p in a.get_paths() for v in p.vertices[:, 0]]
+check('pan+zoom 都要重畫指標疊加：新嘅指標 artist 全部喺新可見窗內（可見 slice 跟住視窗）',
+      len(_xs) > 0 and xl1[0] - 1.0 <= min(_xs) and max(_xs) <= xl1[1] + 1.0)
+_stable = [len(ch12._ind_artists)]
+for _ in range(5):
+    ch12._redraw()
+check('連續 6 幀：主圖指標 artist 數量恒定（parent 唔再 ax.clear() → 自己追蹤清除有效）',
+      len(set(_stable + [len(ch12._ind_artists)])) == 1)
+
+_nr = []
+_orig12 = ch12._redraw
+ch12._redraw = lambda: (_nr.append(1), _orig12())[1]
+_ev = types.SimpleNamespace(inaxes=ch12.ax, xdata=150.0, button=1, ydata=5.0)
+ch12._on_motion(_ev)
+_rd0 = ch12.readout.text()
+_ev.xdata = 160.0
+ch12._on_motion(_ev)
+check('hover：crosshair set_xdata 跟到 + readout 更新，但一次 _redraw 都冇叫（#22 B）',
+      ch12._cross.get_visible() and list(ch12._cross.get_xdata()) == [160, 160]
+      and _nr == [] and ch12.readout.text() != _rd0)
+ok_m, _m12, it_m = mgr12.add('macd', 'sub', {}, origin='t')
+ch12._redraw()
+_ev.inaxes, _ev.xdata = ch12.ax, 170.0   # 🤖 砌 panel 會 fig.clear() 重建 axes → 舊 event 嘅 inaxes 已經係廢 object
+ch12._on_motion(_ev)
+check('指標 panel 嘅 crosshair 一齊跟住 hover（郁滑鼠唔返嚟重砌 panel）',
+      ok_m and any(ln.get_visible() and list(ln.get_xdata()) == [170, 170]
+                   for ln in ch12._panel_cross))
+ch12._on_leave(types.SimpleNamespace())
+check('離開畫布 → crosshair 收埋（主圖 + panel）',
+      not ch12._cross.get_visible() and all(not ln.get_visible() for ln in ch12._panel_cross))
+ch12._redraw = _orig12
+
+_old_up = gk.C_UP
+gk.C_UP = '#FF0000'                # theme recipe（kline_page / quotes_page 都係改 gk.C_* + _redraw）
+ch12._redraw()
+_ids_th = [id(a) for a in ch12._arts]
+gk.C_UP = _old_up
+ch12._redraw()
+check('theme 換色 → 靜態層識得自己重建（配色砌進 collection，唔能靠改 limits）',
+      _ids_th != ids0 and [id(a) for a in ch12._arts] != _ids_th)
+ch12.set_bars(rows[:200])
+_n_verts = sum(len(p.vertices) for c in ch12.ax.collections[:2] for p in c.get_paths())   # 影線 2 + 實體 5 = 7/根
+_qb, _ok_qb = _all_quads(ch12.ax.collections[1:2])          # 實體 collection（影線係兩點段，唔入呢項）
+check('set_bars 換數據 → 靜態層重砌，而且真係畫晒全部 200 根（compound path 頂點 = 7/根）',
+      _n_verts == 7 * 200 and ch12._static_dirty is False)
+check('蠟燭實體都係閉合四邊形（唔係三角形 — 同一個 CLOSEPOLY 陷阱）', len(_qb) == 200 and _ok_qb)
+
+# ══ Part 13：過渡動畫（#23 eased 縮放/復位 + 松手慣性）═════════════════════════
+print('\n── Part 13: 過渡動畫（eased 縮放/復位 + 松手慣性）──')
+from PySide6.QtTest import QTest  # noqa: E402
+ch13 = gk.KlineChart()
+ch13.set_bars(rows)
+ch13._redraw()
+ids13 = [id(a) for a in ch13._arts]
+ch13._on_scroll(types.SimpleNamespace(inaxes=ch13.ax, xdata=200.0, step=1, button=1, ydata=5.0))
+start13, tgt = ch13._anim[1], ch13._anim[2]
+# 🤖 插值用「假時鐘」直接 drive `_anim_tick`：呢個 e2e 進程好重（一次 pump() 實時 ~200 ms），
+#    靠真 QTimer 取樣一定錯身以為已經行完 → 時序契約要控制到時鐘先至測得準。
+w_s, w_t = start13[1] - start13[0], tgt[1] - tgt[0]
+pr = []
+for f in (0.25, 0.5, 0.75, 1.0):
+    ch13._anim = (time.perf_counter() - f * ch13.ANIM_MS / 1000.0, start13, tgt, False)
+    ch13._anim_running = True
+    ch13._anim_tick()
+    pr.append((w_s - (ch13._view[1] - ch13._view[0])) / (w_s - w_t))   # 歸一化進度
+check('滾輪縮放 → ease-out 插值：進度嚴格單調、每段都比線性快（ease-out）、終點逐個位 == target、終止後 _anim 清空',
+      all(pr[i] < pr[i + 1] for i in range(3)) and all(p > f for p, f in zip(pr, (0.25, 0.5, 0.75)))
+      and pr[3] == 1.0 and ch13._view == tgt and ch13._anim is None)
+settle()
+fin = ch13.ax.get_xlim()
+check('過渡終點真係上到屏：xlim == target 逐個位（#23 修復：出界 x 刻度會撐開 limits ±1 根）+ 期間靜態層冇重建',
+      abs(fin[0] - tgt[0]) < 1e-9 and abs(fin[1] - tgt[1]) < 1e-9
+      and [id(a) for a in ch13._arts] == ids13)
+ch13._on_scroll(types.SimpleNamespace(inaxes=ch13.ax, xdata=150.0, step=-1, button=1, ydata=5.0))
+QTest.qWait(60)
+pump()
+mid = ch13._view
+ch13._on_press(types.SimpleNamespace(inaxes=ch13.ax, xdata=150.0, button=1, ydata=5.0))
+check('郁手（press）即刻取消過渡 — 跟手優先，唔會同動畫搶',
+      ch13._anim is None and ch13._view == mid and ch13._drag is not None)
+ch13._on_release(types.SimpleNamespace(inaxes=ch13.ax, xdata=150.0, button=1, ydata=5.0))
+# 由跟隨模式一掣縮到「全部數據」：起點 xmax > n-0.5（tag gutter）→ 以前 `_apply_view` 會逐幀還原返跟隨
+start_full = ch13._view
+ch13._on_scroll(types.SimpleNamespace(inaxes=ch13.ax, xdata=200.0, step=-5, button=1, ydata=5.0))
+tgt_full = ch13._anim[2]
+ch13._anim = (time.perf_counter() - 0.25 * ch13.ANIM_MS / 1000.0,) + ch13._anim[1:]   # 🤖 假時鐘：呢進程一次 event loop 可以 >220ms，靠真 QTimer 取樣會錯身
+ch13._anim_running = True
+ch13._anim_tick()
+mid_full = ch13._view
+settle()
+full = ch13.ax.get_xlim()
+check('由跟隨模式縮到「全部數據」→ 過渡真係郁（中途有中間態、終點 == 全部數據），唔會俾 out-of-range guard 打返落跟隨',
+      start_full is not None and mid_full is not None
+      and start_full[0] > mid_full[0] > tgt_full[0]
+      # 🤖 位移喺 **xmin 軸**量（呢度距離 = 成幾百根）：xmax 嗰邊得幾個位，前面 press 取消會留低喺
+      #    動畫任意一點 → 用 xmax 判閾值一定 flaky。
+      and start_full[0] - mid_full[0] > 1.0
+      and abs(full[0] - tgt_full[0]) < 1e-9 and abs(full[1] - tgt_full[1]) < 1e-9)
+ch13._on_scroll(types.SimpleNamespace(inaxes=ch13.ax, xdata=300.0, step=2, button=1, ydata=5.0))
+settle()                                   # 縮細 + 離開左緣 → 先至分辯到滑行方向（唔係一開波就 clamp）
+ch13._on_press(types.SimpleNamespace(inaxes=ch13.ax, xdata=300.0, button=1, ydata=5.0))
+for _xx in (270.0, 240.0, 210.0):          # 快速向左拖（樣本之間要短：既要有速度，又唔好超出 120ms 取樣窗；🤖 唔好 pump）
+    ch13._on_motion(types.SimpleNamespace(inaxes=ch13.ax, xdata=_xx, button=1, ydata=5.0))
+    QTest.qWait(5)
+before = ch13._view
+ch13._on_release(types.SimpleNamespace(inaxes=ch13.ax, xdata=210.0, button=1, ydata=5.0))
+tgt2 = ch13._anim[2] if ch13._anim else None
+settle()
+after = ch13._view
+check('拖動松手 → 慣性滑行：起過渡、目標 clamp 喺數據範圍內、終點逐個位 == 目標、方向跟住拖動',
+      tgt2 is not None and after is not None and after[0] < before[0]
+      and tgt2[0] >= -0.5 - 1e-9 and tgt2[1] <= len(rows) - 0.5 + 1e-9
+      and abs(after[0] - tgt2[0]) < 1e-9 and abs(after[1] - tgt2[1]) < 1e-9)
+slow = []
+ch13._on_press(types.SimpleNamespace(inaxes=ch13.ax, xdata=100.0, button=1, ydata=5.0))
+for _ in range(3):                       # 慢慢拖（每次隔 60ms）→ 速度 ≈ 0 → 唔應該滑
+    ch13._on_motion(types.SimpleNamespace(inaxes=ch13.ax, xdata=99.0, button=1, ydata=5.0))
+    QTest.qWait(60)
+    pump()
+ch13._on_release(types.SimpleNamespace(inaxes=ch13.ax, xdata=99.0, button=1, ydata=5.0))
+check('慢慢拖再松手 → 唔會滑（速度自然接近 0，唔會亂郁）', ch13._anim is None)
+
+# ══ Part 14：平滑平移（逐幀追近）+ 拖動凍結 Y 尺度（#24）═══════════════════════
+print('\n── Part 14: 平滑平移 + 拖動凍結 Y 尺度 ──')
+import math  # noqa: E402
+
+
+def _yfit(ch, view):
+    """`_apply_view` 應該 fit 出嘅 (價格 ylim, 成交量 ylim) — 照返同一個公式（可見 slice + 6% pad）。"""
+    s = max(0, int(math.floor(view[0])))
+    e = min(len(ch._rows), int(math.ceil(view[1])) + 1)
+    l, h, v = (ch._ohlcv[k] for k in 'lhv')
+    lo, hi = float(l[s:e].min()), float(h[s:e].max())
+    pad = (hi - lo) * 0.06 or abs(hi) * 0.01 or 1.0
+    return (lo - pad, hi + pad), (0.0, (float(v[s:e].max()) or 1.0) * 1.15)
+
+
+def _eqy(ylim, want):
+    return abs(ylim[0] - want[0]) < 1e-9 and abs(ylim[1] - want[1]) < 1e-9
+
+
+def _ev14(x, step=0):
+    return types.SimpleNamespace(inaxes=ch14.ax, xdata=x, button=1, ydata=5.0, step=step)
+
+
+ch14 = gk.KlineChart()
+ch14.set_bars(rows)
+ch14._view = (100.0, 300.0)
+ch14._redraw()
+fit_a = _yfit(ch14, ch14._view)
+cnt = {'apply': 0, 'frame': 0}
+_real_apply14 = ch14._apply_view
+ch14._apply_view = lambda *a, **k: (cnt.__setitem__('apply', cnt['apply'] + 1), _real_apply14(*a, **k))[1]
+_real_frame14 = ch14._frame
+ch14._frame = lambda: (cnt.__setitem__('frame', cnt['frame'] + 1), _real_frame14())[0]
+check('基準：Y 軸自動 fit 可見窗口（唔係全表 min/max）',
+      _eqy(ch14.ax.get_ylim(), fit_a[0]) and _eqy(ch14.axv.get_ylim(), fit_a[1]))
+
+ch14._on_press(_ev14(200.0))
+locked = (ch14.ax.get_ylim(), ch14.axv.get_ylim())
+check('press → 凍結而家嘅 Y 尺度（#24 元兇：邊拖邊 refit = 橫移 + 同時垂直缩放，實測每 25 個 event 變 0.93–1.05×）',
+      ch14._y_lock is not None and _eqy(locked[0], fit_a[0]) and _eqy(locked[1], fit_a[1]))
+ys, frames = [], 0
+for _xx in (210.0, 220.0, 230.0, 240.0, 250.0):
+    ch14._on_motion(_ev14(_xx))
+    ys.append(ch14.ax.get_ylim())
+    if _xx in (220.0, 240.0):                 # 中途插幾幀，模擬真拖動（event 比幀密）
+        ch14._pan_tick()
+        frames += 1
+        ys.append(ch14.ax.get_ylim())
+check('拖動中（連同逐幀追近）Y 範圍逐個位恒定；而且每個 mouse event 唔再重算一次 limits/Y/ticks（實測 137→75，一半白做）',
+      all(_eqy(y, fit_a[0]) for y in ys) and cnt['apply'] == frames)
+QTest.qWait(200)                              # 樣本過期 → 唔觸發慣性（滑行喺 Part 13 已單獨測）
+ch14._on_release(_ev14(250.0))
+final14 = ch14._view
+settle()
+fit_b = _yfit(ch14, final14)
+check('松手 → 一次過 refit 返新窗口（解除凍結、尺度跟到實際拖到嘅位置；兩段尺度真係唔同 → 呢項測到嘢）',
+      ch14._y_lock is None and final14 == (150.0, 350.0)
+      and _eqy(ch14.ax.get_ylim(), fit_b[0]) and not _eqy(locked[0], fit_b[0]))
+
+ch14._view = (100.0, 300.0)
+ch14._apply_view()
+f_before, seq = cnt['frame'], []
+ch14._pan_to((160.0, 360.0))                 # 🤖 target 要企喺數據範圍內：出界會俾 `_apply_view` clamp，量唔到收歛
+for _ in range(20):
+    ch14._pan_tick()                          # 🤖 手動 drive 幀：收歛契約要逐幀斷言，唔靠真 QTimer
+    seq.append(ch14._view)
+    if ch14._pan_target is None:
+        break
+steps = [seq[i + 1][0] - seq[i][0] for i in range(len(seq) - 1)]
+check('平滑平移：逐幀單調追近、零 overshoot、≥3 幀先收歛（每幀位移細 = 滑動而唔係跳格）、最終誤差 0（貼實 target 逐個位）',
+      len(seq) >= 3 and all(seq[i][0] < seq[i + 1][0] for i in range(len(seq) - 1))
+      and all(v[0] <= 160.0 and v[1] <= 360.0 for v in seq)
+      and max(steps) < 60.0 and seq[-1] == (160.0, 360.0) and ch14._pan_target is None)
+check('每一幀都行 `_frame()`（唔能直接 `_apply_view()`：子类靠呢個 hook 重畫指標疊加 — #24 測試逼出嘅 bug）',
+      cnt['frame'] - f_before == len(seq))
+
+ch14._view = (100.0, 300.0)
+ch14._apply_view()
+locked2 = ch14.ax.get_ylim()
+ch14._on_press(_ev14(200.0))
+ch14._on_motion(_ev14(230.0))
+ch14._on_scroll(_ev14(200.0, step=1))
+check('拖動中途滾輪 → 即刻解除 Y 凍結（縮放 = 用戶明確要重縮放）', ch14._y_lock is None)
+settle()
+check('解除之後 Y 跟返新窗口（唔留低凍結咗嘅舊尺度）',
+      _eqy(ch14.ax.get_ylim(), _yfit(ch14, ch14._view)[0]) and not _eqy(ch14.ax.get_ylim(), locked2))
+
+ch14._on_press(_ev14(100.0))
+locked3 = ch14._y_lock
+ch14.set_bars(rows[:200])
+check('set_bars 換數據 → 解除 Y 凍結（新數據必須重 fit）', ch14._y_lock is None and locked3 is not None)
+
+ch14._view = (20.0, 120.0)                   # 🤖 而家得返 200 根：視窗要企喺範圍內，先至分辯到「落後」定「clamp」
+ch14._apply_view()
+ch14._on_press(_ev14(70.0))
+ch14._on_motion(_ev14(120.0))
+check('未追完嘅平移喺下一個手勢之前一定貼實（`_flush_pan`）→ 新 drag 由實際視窗開始，唔會由落後咗嘅位置計',
+      ch14._pan_target == (70.0, 170.0) and ch14._view == (20.0, 120.0))
+ch14._on_press(_ev14(70.0))
+check('貼實之後 `_drag` 錨點 = 實際位置（跟手唔會返跳）',
+      ch14._pan_target is None and ch14._view == (70.0, 170.0) and ch14._drag[1] == 70.0)
 
 print('\n' + ('全部通過 ✅' if not FAILURES else f'失敗 {len(FAILURES)} 項：{FAILURES}'))
 sys.exit(0 if not FAILURES else 1)

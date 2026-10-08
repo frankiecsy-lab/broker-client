@@ -6,6 +6,83 @@
 
 ## 2026-10-08
 
+### MINOR：K 線圖平移順暢度 — 拖動凍結 Y 尺度 + 逐幀平滑平移
+檔案：`gateway/pages/gui_kline.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/bench_kline_pan.py`
+- **要求**（用戶）：「縮放是流暢了，平移還是不順。」
+- **先量度（`.scratch/bench_kline_pan.py`：1200 根、1400×700、模擬 125 Hz 拖動 1.25 s）**：跟手滯後 **0 根**、幀率 **54.8 fps**（已係 Agg 底線，見上一條）→ **唔係 lag、亦唔係幀率**。🤖 **真正元兇：拖動期間 Y 軸逐幀重 fit** —— 垂直尺度每 25 個 event 變 0.933× / 0.952× / 1.047×，橫移 + 同時垂直缩放 = 成張圖「郁郁下彈下」；縮放之所以順，係因為 #23 已經將變化攤平喺 220 ms。對照：`_apply_view` 行咗 **137 次但只上屏 75 次** → 每個 mouse event 都重算一次 limits/Y/ticks，一半白做。
+- **Y 凍結**：`_lock_y()` 喺 `_on_press` snapshot `(ax.ylim, axv.ylim)`，`_apply_view` 拖動／滑行期間一律用鎖定值；松手（無滑行）即刻 `_unlock_y()` 一次過 refit，有滑行就喺 `_anim_tick` 終止先 refit。`_on_scroll` / `set_bars` / `clear` 一律解除（縮放／換數據 = 明確要重縮放）。
+- **平滑平移**：`_on_motion` 唔再 1:1 直接改 `_view`，改設 `_pan_target`；`_pan_tick()` 每幀指數追近（`PAN_EASE = 0.55` → ~2 幀收歛 ≈ 30 ms，感覺唔到滯後，但每幀位移細 = 滑動而唔係跳格）。🤖 用「逐幀比例」而**唔係時鐘插值**：拖動係連續 input，時鐘插值會越拖越落後。任何要讀取「而家視窗」嘅動作（松手 / 縮放 / 再起 drag / 過渡）之前一律 `_flush_pan()` 貼實，唔然會由一個落後咗嘅位置開始計。
+- **順帶修正**：`_apply_view` 嘅 out-of-range guard 由「丟返跟隨模式」改做 `_clamp_view()`（**保留用戶嘅縮放級別**）—— 舊做法喺數據變少／取消過渡後會突然將用戶拉返最新 + 換尺度；手勢進行中（`_anim` / `_pan_target`）一律跳過 guard（#23 同一個坑，平移都會撞右緣 gutter）。每一條幀路徑一律經 `_frame()`（唔能直接 `_apply_view()`：子类靠呢個 hook 重畫指標疊加）。
+- **效果**：`_apply_view` 137 → **75**（= 上屏次數，零白做）、拖動期間 Y 範圍 **1.000× 恒定**、幀率 54.8 → **56.0 fps**；成本係穩態跟手落後 **中位 3.3 根 / 最差 5.3 根**（~60 ms，`PAN_EASE` 係調校掣）。
+- **驗證**：e2e 新增 Part 14（11 項）— 拖動中（連同逐幀追近）Y 範圍逐個位恒定 + 每個 event 唔再重算（`_apply_view` 次數 == 幀數）、松手後一次過 refit 返新窗口、逐幀單調追近 + 零 overshoot + ≥3 幀收歛 + 最終誤差 0、每幀都行 `_frame()`、中途滾輪／`set_bars` 即刻解除凍結、未追完嘅平移喺下一個手勢之前必貼實。`e2e_gui_indicators` / `test_ict_suite` / `e2e_gui_quotes` / `e2e_gui_home` / `e2e_gui_fulltest` / `cli_indicators_live`（真數據）/ `diag_vob_zones` 全部 exit 0 ✅。
+- 🤖 **測試手法**：假時鐘必須用返程式碼同一個 clock —— 呢度先用咗 `time.monotonic()` 砌 25% 進度，但程式碼計時係 `perf_counter()`，兩個 clock 差咗 ~26 ms → 「縮到全部數據」嗰項一直 flaky；另外位移閾值要喺**距離大嗰邊**量（xmin 軸 = 成幾百根），喺 xmax 量得幾個位一定 flaky。
+
+### MINOR：K 線圖過渡動畫（eased 縮放/復位 + 松手慣性）+ 每幀成本再削 → 18.9-20.4 ms/幀
+檔案：`gateway/pages/gui_kline.py`、`gateway/indicators.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/bench_kline_redraw.py`
+- **要求**（用戶）：「是快了，但有方法可以過渡更順暢嗎？偵率高點流暢，類似動畫效果」。
+- **先量度再拍板**：一幀 31 ms = 幾何 8 ms + **axes chrome（grid/tick 文字）23 ms** + figure 1.2 ms。🤖 **matplotlib Agg 喺 1400×700 有 ~20-25 ms 底線（≈40-50 fps），淨係優化繪畫去唔到 60fps**；真 60fps 要換 renderer（QPainter / OpenGL / mplcairo）= 大工程，是次唔做。所以改做「動畫感」：每幀位移細 + 有加減速。
+- **過渡**：`_animate_to(target)` / `_anim_tick()` — ease-out cubic、`ANIM_MS=220 ms`、16 ms tick；滾輪縮放、右鍵/雙擊復位（`follow_at_end` 終止先 `_view=None`）、慣性滑行全部行呢條路；連續滾輪由「而家顯示緊嘅位置」接續 → 唔會跳；`_on_press` 即刻取消（跟手優先）。
+- **慣性**：`_inertia()` 取最近 ≤120 ms 嘅拖動樣本算速度，滑行量 = v×0.2，clamp 喺數據範圍內；慢拖／停低先松手 → 速度自然接近 0，唔會亂郁。
+- **每幀再削**：同色（漲/跌）合併成**一個 compound Path**（`_rect_path`/`_segs_path` → 全圖只有 3 個 `PathCollection`）；指標區塊 `_zone_rects` 同樣合併（47 個 collection → 1，4 個 ICT 疊加 −9 ms/幀）；`MaxNLocator(6)` 主圖 y 刻度 + x 時間標籤 7 → 5（`X_TICKS`，子类跟返）。
+- **效果**：純 K 線一幀 28.7 → **18.9-20.4 ms**（≈50 fps）、4 個 ICT 疊加 64 → **21.5-42.1 ms**、hover 照舊 **0 ms**；對照「只改 `set_xlim`」= 17.1-19.2 ms → 已貼住 renderer 底線。
+- 🤖 **本次引入嘅 regression（用戶抓到：「OB 變三角形了，不是方形」）**：compound Path 用 4 個頂點配 `[M,L,L,CLOSE]` → **`CLOSEPOLY` 唔會用自己嗰個頂點**，實測填到面積 5050/10000 px = 一半，即係**三角形**。蠟燭實體、成交量柱、ICT 區塊全部中招（細個嘅燭身睇唔出，大塊 OB 變楔形好明顯）。修法：一律 5 點（尾點 = 起點重複）+ `[M,L,L,L,CLOSE]`；`_rect_path` / `_zone_rects` 兩處同步。🤖 教訓：合併 path 嘅測試淨係數 artist 數同頂點數係唔夠，要斷言**幾何本身**（e2e 新增：每個 sub-path 必須 5 點、尾點 == 起點、4 個唔同角）。改完 benchmark 冇變（18.9-20.1 ms/幀）。
+- 🤖 **測試逼出三個真 bug（全部已修，唔止係測試期望）**：① 出界嘅 x 時間刻度會**撐開 axes limits**（實測 ±1 根）→ 過渡終點永遠收唔到 target，新增 `_view_ticks()` 統一 clamp（`_apply_view` 同子类標籤遷移共用）；② `_apply_view` 嘅 out-of-range guard 逐幀將 `_view` 打返 `None`（跟隨模式起點 xmax > n−0.5 = 現價 tag gutter）→ 「縮到全部數據」成段動畫等於冇郁，動畫進行中跳過 guard；③ **Windows 嘅 `time.monotonic()` 實測只有 ~16 ms 分辨率**（`perf_counter` ~30 µs）→ 拖動樣本 `dt` 恒為 0、慣性永遠唔會觸發，手勢/動畫計時一律改 `time.perf_counter()`。
+- **驗證**：e2e 新增 Part 13（6 項）— 插值進度嚴格單調且每段都比線性快（ease-out）、終點逐個位 == target 並真係上到屏（`xlim == target`）、動畫期間靜態層冇重建、press 即刻取消、由跟隨模式縮到全部數據真係有中間態、慣性目標 clamp 喺數據範圍內 + 終點 == 目標 + 方向跟住拖動、慢拖唔滑。Part 9 嘅區塊斷言改跟 compound Path 契約（計 `CLOSEPOLY` sub-path，唔再計 path 物件數）。`e2e_gui_indicators` / `test_ict_suite` / `e2e_gui_quotes` / `e2e_gui_fulltest` / `e2e_gui_home` / `diag_vob_zones`（#21 Y-fit 閘 1.12× 冇變）全部 exit 0 ✅。
+- 🤖 **測試手法教訓**：呢個 e2e 進程好重（一次 `pump()` ≈ 200 ms 實時）→ 時序契約要用「假時鐘」直接 drive `_anim_tick`，唔好靠真 QTimer 取樣。
+
+### MINOR：K 線圖繪畫層重構（兩層）— 縮放/平移 241 ms/幀 → ~29 ms
+檔案：`gateway/pages/gui_kline.py`、`gateway/indicators.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/bench_kline_redraw.py`
+- **要求**（用戶）：「K 綫圖的縮放和平移都非常不順」→ 拍板 A+B+C 一齊做。
+- **成因（量度，唔係估）**：`_redraw` 每幀 `ax.clear()` + `ax.bar` → **每根 bar 一個 Rectangle patch**（300 根 = 600 patches、1000 根 = 2000）。基線（1200 根合成、offscreen 同步 `canvas.draw()`）：300 根可見 = **241 ms/幀**、1000 根 = **765 ms**、郁吓滑鼠 = **181 ms**；對照「只改 `set_xlim`」= 47 ms → bottleneck 係**每幀重建 artist**。指標疊加唔係主因（4 個 ICT 只多 ~35 ms）。
+- **A 兩層繪畫**：`set_bars` 一次轉全長度 numpy 陣列；`_rebuild_static()` 把**全部** bar 一次過畫成 **3 個 collection**（影線 `LineCollection` 逐段上色、實體／成交量 `PolyCollection` 逐 bar facecolor）+ 預建現價線/標注/crosshair，只有數據、axes 或 **theme 配色**變咗先重建；`_apply_view()` 做視窗層（xlim + 由可見 slice 重算 Y fit + ticks + tag 位置）。x 一律用**絕對 index**（`_s` 恒為 0 → 子类 slice 契約 `arr[_s+i0:_s+i1]` 照樣啱）。
+- **B hover**：crosshair 預建，郁滑鼠只 `set_xdata` + readout + `draw_idle()`，一次 `_redraw` 都唔叫；指標 panel 嗰啲 crosshair 同樣預建跟隨（`_panel_cross`）。
+- **C 手勢節流**：`_request_redraw()` — 狀態 + limits 即時更新（手勢數學永遠跟到最新、測試照舊同步），上屏用 pending flag + `QTimer.singleShot(16ms)` 合併到 ~60fps。
+- **子类同步**：parent 唔再 `ax.clear()` → `IndicatorKlineChart` 自己追蹤 `_ind_artists` 逐個 `remove()`；改寫 `_frame` hook（而唔係 `_redraw`）先至食到手勢節流；`_build_axes()` 後標記 `_static_dirty`。
+- **效果**：一幀 241 → **28.7 ms**（300 根）、765 → **28.9 ms**（1000 根）、hover 181 → **0 ms**；開 4 個 ICT 疊加 775 → 64 ms。而家等同「只改 xlim」嘅純渲染底線，而且**同可見/總根數近乎無關**（總 300 根 21 ms、3000 根 38 ms → 剩低嘅係 axes chrome 固定開支）。
+- 🤖 **未做**：超過 ~1000 根唔做抽稀/聚合（`MAX_VIEW` 照舊）— 實測 3000 根先 38 ms，未值得加複雜度。
+- **驗證**：e2e 新增 Part 12 — pan+zoom 後靜態層 artist **逐個同一個物件**、`_static_dirty` 保持 False、Y fit 跟住可見 slice；指標 artist 全部喺新可見窗內 + 連續 6 幀數量恒定（無疊加洩漏）；hover 零 `_redraw`、主圖 + panel crosshair 一齊跟、離開收埋；改 `gk.C_*` + `_redraw()` → 靜態層識得自己重建（theme recipe 唔破）；`set_bars` 換數據 → 重砌且畫晒全部 200 根。Part 11 嘅 `collections > 0` 收緊為**增量 == 1**（蠟燭本身都係 collection，唔准再睇絕對數量）。`test_ict_suite` / `e2e_gui_indicators` / `e2e_gui_quotes` / `e2e_gui_fulltest` / `e2e_gui_home` / `cli_indicators_live`（真數據）/ `diag_vob_zones`（Y-fit 閘 1.66→1.12 冇變）全部 exit 0 ✅。
+
+### MINOR：OB 家族新參數 `supersede` — 同方向出現更新嘅 OB 即取代舊區塊
+檔案：`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_ict_suite.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/diag_vob_zones.py`
+- **要求**（用戶，附截圖）：「同一類 OB 出現了，之前的 OB 是不是應該消失」——圖上兩個同價位嘅空頭區塊並排出現。
+- **語義交代**：ICT 本身**唔係**咁規定的 — OB 係被價格消耗（即 `pen`）判死，唔係被新 OB 取代；但 TradingView 嗰類 OB indicator 普遍係「每邊只顯示最新一個」，而用戶要嘅正係呢個。所以做參數、預設 1（可關 = 舊行為 / OB map）。
+- **實作**：`_supersede(zones)` — 按 start 排序後，較新者出現即把之前所有**同向**區塊 `end = start − 1`，終止得太短嘅剔除；唔同方向互不相干。`_ob_zones(..., supersede=True)` 同 `compute_breaker` 一併接入（OB / VOB / BRK 三個 def 同時暴露，規則一致）。
+- 🤖 **順帶解決咗之前未拍板嘅「OB 中途冇穿但不見了」**：`_zones_to_arrays` 係「每根每邊一個值」，舊區塊被較新者覆蓋 → 睇落中途斷。`supersede=1` 令同向**必然唔重疊** → 覆蓋呢條路永遠行唔到，陣列模型變成準確，**唔需要做多 slot `(n, S)`**（呢個選項正式取消）。
+- **效果（真 HSI 300 根 K_15M）**：`空 197..299` + `空 221..299`（兩個重疊、都拖到最後一根）→ `空 194..194`、`空 195..218`、`空 219..299`（各自完整、新者出現即止）；多頭 `267..278` → `279..297` 同樣接力。同向重疊對數：1 → **0**。
+- **驗證**：`test_ict_suite.py` 新增 [I] — 用 flat 陣列（永遠唔會被消耗）直接喂 `_ob_zones`：關 = 三個各自畫到結尾並重疊；開 = 舊多頭喺新者前一根（11）終止、新者照畫到結尾、空頭唔受影響、同向零重疊；落陣列 bar11 仍係舊 level、bar12 變新 level；隨機 400 根（25 候選 → 15 區塊）零重疊；registry 斷言三個 def 嘅 `supersede` 範圍/預設一致。e2e 參數欄 7 → 8 個、摘要改 `14/1/5/5/3/50/1/15`。i18n +2 key（名 + 解釋 × 三語，共 69 key）。`test_ict_suite` / `e2e_gui_indicators` / `cli_indicators_live`（真數據 300 根，嚴格斷言全開）全部 exit 0 ✅。
+
+### MINOR：主圖 Y-fit 距離閘 — 離價好遠嘅 ICT 區塊唔再撐大 Y 軸
+檔案：`gateway/indicators.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/test_ict_suite.py`、`.scratch/diag_vob_zones.py`
+- **要求**（用戶，附截圖）：「你睇下有啲 VOB 係獨立出來，跟 K 綫冇連接同關係嘅」。
+- **成因**：區塊/水平位畫嘅係**歷史價位** — 早期形成、收盤從未進入嘅 OB 永遠有效（`end = n-1`），價位可以離可見窗好遠；而 `_draw_indicators` 嘅主圖 Y-fit 會將疊加嘅**全部**可見值計進去。真 HSI 300 根 K_15M、睇最後 25 根：兩個 `24278–24295` 空頭區塊離可見 K 線 **154 點 = 可見範圍 57%**，Y 軸被撐到 K 線範圍嘅 **1.66 倍** → 蠟燭縮晒 + 中間一大片空白。
+- **實作**：`FAR_OVERLAYS`（11 個 ICT main 疊加）+ `FIT_PAD = 0.25` + `_fit_vals(arr, lo, hi, pad)` — 呢啲疊加只有喺「可見價格範圍 ±25%」內嘅值先參與 Y-fit。🤖 唔係唔畫、亦唔改偵測：方塊照樣砌（兩張截圖 artists 數量一致），只係唔再為佢擠細 K 線；往左平移返去嗰個年代，區塊自然出現喺佢應該喺嘅位置。貼價指標（BOLL/ATR/MACD）完全唔入閘，行為唔變。
+- **效果（真 HSI 300 根 K_15M，睇最後 25 根）**：Y 軸 1.66 倍 → **1.12 倍**（即 parent 自帶 6% 邊距），2 個離譜區塊被隔走。對比截圖 `.scratch/vob_far_off.png`（舊）vs `.scratch/vob_boxes_live.png`（新）。
+- **驗證**：e2e 新增 Part 11 — 臨時 def 砌「成個可見窗都係同一個價位」嘅區塊：開閘 → **Y 軸逐個位唔變**但方塊照樣畫出（collections > 0）；閘關咗 → 同一個區塊確實撐大 Y 軸（證明係距離閘做功）；喺 FIT_PAD 內（+10%）嘅區塊仍然參與 fit；移除臨時 def 後還原。`test_ict_suite.py` 新增 [S] — `_fit_vals` 邊界（入閘 / 剔除 / 全 NaN / 唔改範圍內值）、`FIT_PAD ∈ (0,1]`、`FAR_OVERLAYS` 恰好 = 全部 ICT main 疊加且唔含 BOLL/ATR/MACD。兩套全綠 ✅。
+- 🤖 **未處理**：用戶另一條「OB 中途冇穿但不見了」係 `_zones_to_arrays` 嘅「較新者覆蓋」（同向重疊區塊淨低最新嗰個嘅 level）→ 要逐個保留自己完整有效期需要將陣列做**多 slot 並存** `(n, S)`，未做。
+
+### MINOR：所有 K 線圖 — 左鍵雙擊還原縮放 + 即刻返到最新 K 柱
+檔案：`gateway/pages/gui_kline.py`、`.scratch/e2e_gui_indicators.py`
+- **要求**（用戶）：所有 K 線圖連擊兩下可以還原縮放大小，並移到最新嘅 K 柱。
+- **實作**：`KlineChart._on_press` 收 `ev.dblclick` → `_view = None`（跟隨最新，即右鍵復位嗰條路）+ 清 `_drag`/`_hover_idx`。🤖 已核對 `backend_qt` 源碼：Qt 嘅 `mouseDoubleClickEvent` 會以 `dblclick=True` 派 `button_press_event`，唔使自己計時；🤖 分支必須喺設 `_drag` 之前，唔然第一次 click 已開始嘅拖動狀態會留低；用 `getattr(ev, 'dblclick', False)` 係為咗手砌 fake event 嘅測試照樣行得。
+- **覆蓋面**：改喺 base class → 獨立 K 線頁、K線頁 `IndicatorKlineChart`（連指標 panel 都計，子类 `_on_press` 已改寫 inaxes）、行情頁 6 格全部自動一樣。
+- **驗證**：e2e 新增 3 條 — 主圖雙擊（先滾輪縮放令 `_view` 有值 → 雙擊後 `None`）、指標 panel 上雙擊同樣有效、單擊 `dblclick=False` 唔會復位（照樣拖動）；`e2e_gui_indicators` 全綠 ✅。
+
+### MINOR：指標管理 — ICT 全套（BOS/CHoCH/LIQ/EQHL/PD/OTE/BRK/BPR）+ 每個指標/參數一行說明（可摺疊）
+檔案：`gateway/indicators.py`、`gateway/i18n.py`、`gateway/pages/indicators_page.py`、`gateway/pages/kline_page.py`、`.scratch/test_ict_suite.py`（新）、`.scratch/e2e_gui_indicators.py`、`.scratch/cli_indicators_live.py`
+
+- **要求**（用戶）：增加 ICT 所有常用指標，一樣可參數化；所有指標都要有一行描寫同點樣用，喺指標管理列表顯示；每個參數詳細解一行，可摺疊顯示全部。
+- **新增 8 個 def（合共 14 個）**：`BOS`/`CHoCH`（收盤穿過最近已確認拐點；方向逆住上一個突破者 = CHoCH）、`LIQ`（影線穿過前高/低但收盤返返入面 = Stop Hunt；收盤都出界即「位已消費」，唔再當掃蕩）、`EQHL`（兩個相距 ≤ `tol`×ATR 嘅同類拐點 = 流動性池）、`PD`（回看 `lookback` 根 dealing range + 50% 均衡線）、`OTE`（推進段 `fib_lo`–`fib_hi` 帶，預設 0.62–0.79）、`BRK`（OB 偵測完全重用 `_ob_candidates`，只畫被收盤着穿之後嗰段並反轉方向）、`BPR`（兩個反向 FVG 嘅重疊部分）。全部參數化（拐點半徑 / 最多水平位 / 等高容差 / fib 上下緣 / 回看根數…）。
+- **共用 helper**：`_swings`（fractal 拐點）、`_structure_breaks`、`_levels_to_arrays`/`_level_spans`、`_fvg_candidates`（FVG 同 BPR 共用，抽走重複）。
+- **契約延伸（照 #20 同一個 compute 契約）**：水平位 = `*_top == *_bottom` == 價位 + `mark_bull/mark_bear`（標記嗰根嘅價位）；PD = `range_hi/equilibrium/range_lo`。🤖 一律用價格值，mark 陣列都唔准用旗標 — 主圖 Y-fit 照樣啱。繪畫 `_plot_levels`（逐根 `hlines` 自然連成橫線 + `^`/`v` 三角 + BOS/CHoCH tag）、`_plot_band`（淡色 dealing range + hi/lo 細線 + 均衡虛線）。
+- **說明**：`IndicatorDef.desc_key`（一行描寫）/ `usage_key`（點樣用）+ `ParamSpec.note_key`（每個參數一行）。管理頁表格加「**說明**」欄（Stretch 欄、一行、跟語言；完整用法喺 tooltip）+ **可摺疊詳情面板**（`ind_detail_toggle` 預設收起；展開 = 完整用法 + 每個參數一行 `ind_detail_note_<key>`，永遠跟頂欄類型 — 新增時未有任何行，所以唔跟表格所選）。K線頁開關掣 tooltip 帶一行描寫（`_ind_tooltip()` 合併咗原本兩處重複拼接）。i18n 新增 63 個 key × 三語。
+- 🤖 **事實與限制**：① 拐點要 k 根之後先確認到 → 結構類指標天然滯後 k 根（ICT 本身係事後確認，唔係預測）；② 第一個突破永遠唔算 CHoCH（冇參照方向）；③ PD 需要 ≥ `lookback` 根先有值 — 預設 100，得 60 根嘅 live 串流必然全 NaN（正確行為，測試改用 `lookback=30`）；④ CHoCH 喺一段純趨勢 60 根可以合法為 0 → live 斷言只驗結構一致（標記 ⊆ 位），唔驗數量；⑤ 時間類 ICT（Kill Zones / 亞洲盤 / 日開高低）冇做 — `compute` 只收 o/h/l/c，要再加時間欄 + x 範圍繪畫形態。
+- **驗證**：`.scratch/test_ict_suite.py`（新）55 checks 全綠 — 7 個手砌 K 線 fixture 逐條斷言（拐點清單 / BOS+CHoCH 邊個算逆勢 / 掃蕩 vs 真破位 / 等高等低 tol 過濾 / dealing range 與均衡 / OTE fib 帶起訖與 fib 反轉防呆 / BRK 只畫失效之後 / BPR 重疊部分）+ registry（14 個 def 全部有 desc/usage/note、63 key × 三語非空、參數預設喺範圍內、隨機 400 根全部唔炸）。e2e 新增 Part 10 全綠（8 個新 def 逐個加入 → 主圖 artists 增量**逐個等於按 `_PLOTTERS` 契約算出嘅期望**：bos = 2 橫線 + 2 三角 + 10 tag、pd = 1 fill + 3 線…；main 唔砌 panel；說明欄/tooltip/展開收起/轉類型即時跟/三語）。live smoke 全綠（真 HSI K_1M：BOS 2 段、LIQ 10 段、EQHL 2 段、PD 171 根、OTE/BRK/BPR 都有區塊；截圖 `.scratch/ict_structure_live.png`）。舊 suite indicators/futu_trade/p8/home/favorites/quotes/symbol_list/fulltest/test_symbol_search_fuzzy 全部 exit 0。
+- **跟進（用戶反映「VOB 區域連續、唔係獨立方塊」）**：成因確認 — 同向區塊重疊時陣列係「較新者覆蓋」，level 喺中途跳，但舊繪畫只按 NaN 斷段 → 真 HSI 200 根上 `[94..199]` 一段內含 6 個唔同 level 砌成一大片。修法 = `_zone_boxes()`：喺 level 變化位切段，每段 top/bot 必然恆定 → 每個方塊一個 `fill_between` 矩形（±0.5 覆蓋自己嗰啲根，單根區塊都睇到）。🤖 陣列契約唔動（純繪畫層）；順帶移除舊 `np.where(m, bot, 0.0)` NaN hack。e2e 期望同步改為按方塊數計（`exp_boxes` 獨立實作）+ 新增一個手砌重疊 fixture 斷言切成 2 個方塊；live 可見窗 11 個方塊（之前 4 大片），截圖 `.scratch/vob_boxes_live.png`。
+- **OB 家族兩個新參數（用戶拍板）**：`max_size`（區塊最大高度 ×ATR，預設 3；OB 燭本身超過即屬位移燭、唔算訂單塊；0 = 唔過濾）+ `pen`（失效深度 %區塊，預設 50 — 收盤進入區塊超過幾多比例即當被消耗（mitigation）、區塊終止；100 = 舊行為「完全穿過對面邊」，0 = 一入即死）。🤖 用**收盤**唔用影線（影線碰到區塊太常見，會搞到區塊一出現就死）。OB / VOB / BRK 三個 def 同時暴露、同一套規則（`_ob_candidates` / `_ob_zones` 共用，唔可以三個指標唔同規則）；`compute` 入面 `params.get('pen', 100)` / `get('max_size', 0)` 只係手砌 dict 嘅兜底，實際經 `_new_item` 一定填滿 def 預設。i18n 新增 4 個 key（名 + 解釋 × 三語），`ind_use_ob` 用法文案跟住改（「收盤着穿區塊即失效」→「超過失效深度即被消耗」）。
+- **效果（真 HSI 200 根 K_1M 實測）**：區塊由 12 個 → 10 個，最大 高/ATR 6.48 → 2.31（76 點嗰舊位移燭消失），多數區塊唔再拖到最後一根（例：`多 121..199` → `121..170`）；剩低嘅「畫到最後一根」係真未被穿透，屬正確。
+- **驗證**：新增 Fixture H — 手砌 K 線令 pen=0 / 50 / 100 各喺唔同根失效（j=7 / j=8 / j=10），逐條斷言 + 「影線插穿成個區塊但收盤未過 → 未死」+ max_size 以 fixture 自己嘅 高度/ATR 比例（0.80）前後 ±0.1 斷言；BRK 同步斷言 pen=50 → Breaker 由 j=8 開始、pen=100 → 只能 j=10；registry 斷言三個 def 嘅 max_size/pen 範圍與預設一致。e2e 參數欄斷言改做 7 個 + 參數摘要 `14/1/5/5/3/50/15`。
+- 🤖 **live 斷言修正**：EQHL 喺 200 根窗口可以合法為 0（同一日兩次實測 0 段 對 2 段）→ `cli_indicators_live.py` 把 `choch/eqhl/brk/bpr` 歸入 `MAY_BE_ZERO`：只斷言陣列全長度 + 幾何正確，數量改為報告（BOS/LIQ/OTE/OB 家族仍然要求 > 0）。連跑兩次全部 exit 0。
+
 ### MINOR：主菜單刪預留言面 + 指標管理新增 ICT 區塊指標（OB / FVG / VOB）
 檔案：`gateway/app.py`、`gateway/i18n.py`、`gateway/indicators.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/cli_indicators_live.py`、`.scratch/e2e_gui_futu_trade.py`
 
