@@ -1,4 +1,4 @@
-"""指標管理 — 指標領域單一事實來源：INDICATOR_DEFS（BOLL/ATR/MACD + ICT 全套 OB/FVG/VOB/BRK/BPR/BOS/CHoCH/LIQ/EQHL/PD/OTE，共 14 個）
+"""指標管理 — 指標領域單一事實來源：INDICATOR_DEFS（常用 BOLL/MA 主圖 + ATR/MACD/KDJ/RSI 副圖 + ICT 全套 OB/FVG/VOB/BRK/BPR/BOS/CHoCH/LIQ/EQHL/PD/OTE，共 17 個）
 + 純計算 + IndicatorManager + IndicatorKlineChart（ticket #19 / #20 / #21）。
 
 設計契約：
@@ -90,6 +90,77 @@ def compute_macd(ohlc, params):
     dif = _ema(c, fast) - _ema(c, slow)
     dea = _ema(dif, signal)
     return {'dif': dif, 'dea': dea, 'hist': HIST_SCALE * (dif - dea)}
+
+
+def compute_ma(ohlc, params):
+    """均線：SMA(p) × 4 條（ma1..ma4，同 BOLL mid 同一 pandas rolling）。前 p−1 個 NaN。
+    #28：showN=0 → 該條 key 唔輸出（唔畫、唔入 Y-fit／panel fit；缺 key 當顯示）。"""
+    import pandas as pd
+    c = ohlc['c']
+    n = c.shape[0]
+    s = pd.Series(c)
+    out = {}
+    for i, pk in enumerate(('p1', 'p2', 'p3', 'p4'), 1):
+        if not int(params.get('show%d' % i, 1)):
+            continue
+        p = int(params[pk])
+        out['ma%d' % i] = s.rolling(p).mean().to_numpy() if n >= p else np.full(n, np.nan)
+    return out
+
+
+def compute_kdj(ohlc, params):
+    """KDJ（華語 app 慣例）：RSV = (c−LLV(n))/(HHV(n)−LLV(n))×100（平穩段 = 50）；
+    K/D = 華語 SMA 遞推（K = K_prev + (RSV−K_prev)/m1，seed 50 — 🤖 唔係簡單平均，亦唔係 ewm(adjust)）；
+    J = 3K−2D。前 n−1 個 NaN。"""
+    h, l, c = ohlc['h'], ohlc['l'], ohlc['c']
+    nd, m1, m2 = int(params['n']), int(params['m1']), int(params['m2'])
+    n = c.shape[0]
+    k = np.full(n, np.nan)
+    d = np.full(n, np.nan)
+    j = np.full(n, np.nan)
+    if n < nd:
+        return {'k': k, 'd': d, 'j': j}
+    import pandas as pd
+    s = pd.Series(c)
+    llv = s.rolling(nd).min().to_numpy()
+    hhv = s.rolling(nd).max().to_numpy()
+    rng = hhv - llv
+    with np.errstate(invalid='ignore', divide='ignore'):
+        rsv = np.where(rng > 0, (c - llv) / np.where(rng == 0, 1.0, rng) * 100.0, 50.0)
+    kv = dv = 50.0
+    for i in range(nd - 1, n):
+        kv += (rsv[i] - kv) / m1
+        dv += (kv - dv) / m2
+        k[i], d[i], j[i] = kv, dv, 3.0 * kv - 2.0 * dv
+    return {'k': k, 'd': d, 'j': j}
+
+
+def compute_rsi(ohlc, params):
+    """RSI（Wilder）：漲跌幅 → RMA（seed = 前 period 個變動嘅平均，同 compute_atr 同一 Wilder 遞推）；
+    RSI = 100 − 100/(1+RS)。全無跌 = 100、全平 = 50（如實）。前 period 個 NaN。"""
+    c = ohlc['c']
+    period = int(params['period'])
+    n = c.shape[0]
+    rsi = np.full(n, np.nan)
+    if n <= period:
+        return {'rsi': rsi}
+    ch = np.diff(c)
+    gain = np.maximum(ch, 0.0)
+    loss = np.maximum(-ch, 0.0)
+
+    def _val(ag, al):
+        if al == 0.0:
+            return 100.0 if ag > 0.0 else 50.0
+        return 100.0 - 100.0 / (1.0 + ag / al)
+
+    ag = gain[:period].mean()
+    al = loss[:period].mean()
+    rsi[period] = _val(ag, al)
+    for i in range(period + 1, n):
+        ag = (ag * (period - 1) + gain[i - 1]) / period
+        al = (al * (period - 1) + loss[i - 1]) / period
+        rsi[i] = _val(ag, al)
+    return {'rsi': rsi}
 
 
 # ─────────────── ICT 區塊指標（OB / FVG / VOB）───────────────
@@ -526,6 +597,7 @@ class ParamSpec:
     lo: float
     hi: float
     is_int: bool = True
+    is_bool: bool = False   # #28：開關型參數（0/1）→ 管理頁出 CHECKBOX；唔入參數摘要
     note_key: str = ''      # 一行解釋（管理頁「參數說明」；唔填即冇解釋）
 
 
@@ -559,6 +631,29 @@ INDICATOR_DEFS = {
          ParamSpec('slow', 'ind_p_slow', 26, 3, 400, note_key='ind_n_macd_slow'),
          ParamSpec('signal', 'ind_p_signal', 9, 2, 200, note_key='ind_n_macd_signal')),
         compute_macd, 35, 'ind_desc_macd', 'ind_use_macd'),
+    # ── 常用：均線 / 擺蕩 ──
+    'ma': IndicatorDef(
+        'ma', 'MA', ('main',),
+        (ParamSpec('p1', 'ind_p_p1', 5, 2, 400, note_key='ind_n_ma_p'),
+         ParamSpec('p2', 'ind_p_p2', 10, 2, 400, note_key='ind_n_ma_p'),
+         ParamSpec('p3', 'ind_p_p3', 20, 2, 400, note_key='ind_n_ma_p'),
+         ParamSpec('p4', 'ind_p_p4', 60, 2, 400, note_key='ind_n_ma_p'),
+         # #28：逐條線顯示開關（管理頁 CHECKBOX / 行情頁 menu 子項；0 → compute 唔輸出 = 唔畫唔入 fit）
+         ParamSpec('show1', 'ind_p_show1', 1, 0, 1, is_bool=True, note_key='ind_n_ma_show'),
+         ParamSpec('show2', 'ind_p_show2', 1, 0, 1, is_bool=True, note_key='ind_n_ma_show'),
+         ParamSpec('show3', 'ind_p_show3', 1, 0, 1, is_bool=True, note_key='ind_n_ma_show'),
+         ParamSpec('show4', 'ind_p_show4', 1, 0, 1, is_bool=True, note_key='ind_n_ma_show')),
+        compute_ma, 60, 'ind_desc_ma', 'ind_use_ma'),
+    'kdj': IndicatorDef(
+        'kdj', 'KDJ', ('sub',),
+        (ParamSpec('n', 'ind_p_n', 9, 2, 100, note_key='ind_n_kdj_n'),
+         ParamSpec('m1', 'ind_p_m1', 3, 2, 50, note_key='ind_n_kdj_m'),
+         ParamSpec('m2', 'ind_p_m2', 3, 2, 50, note_key='ind_n_kdj_m')),
+        compute_kdj, 15, 'ind_desc_kdj', 'ind_use_kdj'),
+    'rsi': IndicatorDef(
+        'rsi', 'RSI', ('sub',),
+        (ParamSpec('period', 'ind_p_period', 14, 2, 200, note_key='ind_n_rsi_period'),),
+        compute_rsi, 15, 'ind_desc_rsi', 'ind_use_rsi'),
     # ── ICT：區塊（OB 家族 / 缺口 / 結構）──
     'ob': IndicatorDef(
         'ob', 'OB', ('main',),
@@ -650,6 +745,8 @@ def _clamp_param(spec, value):
     if math.isnan(v) or math.isinf(v):
         v = float(spec.default)
     v = max(spec.lo, min(spec.hi, v))
+    if spec.is_bool:
+        return 1 if v > 0 else 0
     return int(round(v)) if spec.is_int else v
 
 
@@ -657,6 +754,8 @@ def _params_summary(def_, params):
     """圖表 panel 標題 / 表格摘要：參數按 schema 順序用 '/' 連接（語言中立）。"""
     out = []
     for p in def_.params:
+        if p.is_bool:   # #28：開關型參數唔入摘要（MA 摘要照舊 = 週期串）
+            continue
         v = params.get(p.key, p.default)
         out.append(str(int(v)) if p.is_int else f"{float(v):g}")
     return '/'.join(out)
@@ -859,6 +958,32 @@ def _plot_macd(ax, x, sl):
     ax.plot(x, sl['dea'], color=gk.C_MUTED, linewidth=0.9)
 
 
+def _plot_ma(ax, x, sl):
+    """MA 四條線：palette 內揀 4 個可分辨色（唔引入新 hex）；線喺價格尺度 = 自動入主圖 Y-fit。
+    #28：sl 冇該 key（showN=0，compute 已跳過）→ 唔畫。"""
+    for key, col in (('ma1', gk.C_ACCENT), ('ma2', gk.C_UP),
+                     ('ma3', gk.C_DOWN), ('ma4', gk.C_MUTED)):
+        y = sl.get(key)
+        if y is None:
+            continue
+        ax.plot(x, y, color=col, linewidth=0.9)
+
+
+def _plot_kdj(ax, x, sl):
+    ax.axhline(20, color=gk.C_BORDER, linewidth=0.6, linestyle='--')
+    ax.axhline(80, color=gk.C_BORDER, linewidth=0.6, linestyle='--')
+    ax.plot(x, sl['k'], color=gk.C_ACCENT, linewidth=0.9)
+    ax.plot(x, sl['d'], color=gk.C_MUTED, linewidth=0.9)
+    ax.plot(x, sl['j'], color=gk.C_TEXT, linewidth=0.8)
+
+
+def _plot_rsi(ax, x, sl):
+    for ref in (30, 70):
+        ax.axhline(ref, color=gk.C_BORDER, linewidth=0.6)
+    ax.axhline(50, color=gk.C_BORDER, linewidth=0.6, linestyle='--')
+    ax.plot(x, sl['rsi'], color=gk.C_ACCENT, linewidth=1.0)
+
+
 def _zone_boxes(x, top, bot):
     """區塊陣列 → 一個個獨立方塊 [(x0, x1, lo, hi)]。
     🤖 必須喺 level 變化位切段：同向區塊重疊時陣列係「較新者覆蓋」（level 會喺中途跳），
@@ -935,6 +1060,7 @@ def _plot_band(ax, x, sl):
 
 
 _PLOTTERS = {'boll': _plot_boll, 'atr': _plot_atr, 'macd': _plot_macd,
+             'ma': _plot_ma, 'kdj': _plot_kdj, 'rsi': _plot_rsi,
              'ob': _plot_zones, 'fvg': _plot_zones, 'vob': _plot_zones,
              'brk': _plot_zones, 'bpr': _plot_zones, 'eqhl': _plot_zones, 'ote': _plot_zones,
              'bos': partial(_plot_levels, tag='BOS'), 'choch': partial(_plot_levels, tag='CHoCH'),
@@ -942,7 +1068,7 @@ _PLOTTERS = {'boll': _plot_boll, 'atr': _plot_atr, 'macd': _plot_macd,
 
 # 🤖 ICT 疊加畫嘅係「歷史價位」（區塊/水平位/帶狀）：一個幾百根之前形成、價格再冇返去過嘅 OB 依然有效，
 # 但佢嘅價位可以離可見 K 線好遠。全部照樣參與主圖 Y-fit 就會撐大條 Y 軸 → 蠟燭縮晒 + 出現一大片空白
-# （用戶：「有啲 VOB 獨立出嚟，同 K 線冇連接同關係」）。BOLL/ATR/MACD 係貼價線，照舊全量參與 fit。
+# （用戶：「有啲 VOB 獨立出嚟，同 K 線冇連接同關係」）。BOLL/MA/ATR/MACD 係貼價線，照舊全量參與 fit。
 FAR_OVERLAYS = frozenset(('ob', 'vob', 'brk', 'fvg', 'bpr', 'eqhl', 'ote',
                           'bos', 'choch', 'liq', 'pd'))
 FIT_PAD = 0.25     # 遠距離疊加最多將主圖 Y 軸擴展「可見價格範圍」嘅 25%
@@ -966,7 +1092,9 @@ class IndicatorKlineChart(gk.KlineChart):
     `self._s`（絕對→本地座標基準；#22 之後 parent 用絕對 index 繪畫 → 恒為 0，即本地 == 絕對）、
     手勢 guard `(self.ax, self.axv)`、以及 parent 唔再 `ax.clear()`（指標 artist 由本类自己追蹤清除）。
     改 gui_kline.KlineChart 內部要同步檢查呢度。
-    冇 `set_indicator_manager()`（例如行情頁 6 格 / standalone gui_kline）→ 行為同 parent 逐字相同。
+    冇 `set_indicator_manager()` 亦冇 `set_strategy()`（例如 standalone gui_kline）→ 行為同 parent 逐字相同。
+    #27：`set_strategy(entry)` → 主圖畫 B/S 買賣標記（marks cache 跟 data_seq → 串流 set_bars 自動同步）。
+    #29：entry.mark_buffer（預設 10）→ 最近 N 條 bar 內嘅標記淡化；N 喺策略頁可調。
     """
 
     def __init__(self, parent=None):
@@ -980,11 +1108,23 @@ class IndicatorKlineChart(gk.KlineChart):
         self._ind_axis = {}          # inst_id → axes
         self._data_seq = 0           # set_bars 計數（cache key 之一）
         self._ind_cache = None       # {'data_seq','cfg_ver','full':{inst_id:{series:ndarray 全長度}}}
+        self._strat = None           # #27：策略 entry（B/S 買賣標記；獨立於指標開關）
+        self._strat_sig = ()         # 規則指紋（改策略/改規則 → marks 作廢）
+        self._marks = []             # [(bar idx, 價格, 'B'/'S')]
+        self._marks_seq = -1         # marks cache 對應 data_seq（-1 = 過期）
 
     # --- 注入 / 失效 -----------------------------------------------------------
     def set_indicator_manager(self, mgr):
         self._ind_mgr = mgr
         self._ind_dirty = True
+
+    def set_strategy(self, entry):
+        """#27：注入策略 entry（None = 清除）→ 主圖畫 B/S 買賣標記。
+        marks cache key = (data_seq, 規則指紋) → 串流 set_bars 即自動失效重算，同步由結構保證。"""
+        self._strat = entry
+        self._strat_sig = () if entry is None else (
+            str(entry.get('id', '')), repr(entry.get('buy')), repr(entry.get('sell')))
+        self._marks_seq = -1
 
     def mark_indicators_dirty(self):
         self._ind_dirty = True
@@ -1023,12 +1163,13 @@ class IndicatorKlineChart(gk.KlineChart):
     def _frame(self):
         """重寫 parent hook：砌 panel（需要時）→ 蠟燭/成交量自動畫到（可能已重建嘅）self.ax/self.axv → 疊指標。
         🤖 用 hook 而唔係重寫 `_redraw`：parent 嘅手勢節流（`_request_redraw`）先至會行到呢度。"""
-        if self._ind_mgr is not None:
+        if self._ind_mgr is not None or self._axes_sig:   # 指標關咗但 _axes_sig 非空 → 重建一次返 parent 佈局
             sig = tuple(p[0] for p in self._visible_panels())
             if self._ind_dirty or sig != self._axes_sig:
                 self._build_axes()
         super()._frame()
-        if self._ind_mgr is not None:
+        if self._ind_mgr is not None or self._strat is not None or self._ind_artists:
+            # _ind_artists 非空 = 上一幀有殘留（剛關咗指標/策略）→ 行一次空幀清走
             self._draw_indicators()
 
     def _ensure_ind_cache(self):
@@ -1054,6 +1195,65 @@ class IndicatorKlineChart(gk.KlineChart):
                     full[e['id']] = d.compute(ohlc, e['params'])
         self._ind_cache = {'data_seq': self._data_seq,
                            'cfg_ver': self._ind_mgr.config_version, 'full': full}
+
+    # --- #27：策略 B/S 買賣標記（獨立於指標開關）--------------------------------
+    def _ensure_marks(self):
+        """marks cache（key = data_seq + 規則指紋）→ 串流 set_bars 即自動重算 = 同步由結構保證。"""
+        if self._strat is None:
+            self._marks = []         # 抽走策略 → 舊 marks must 清（唔留殘影）
+            return
+        if self._marks_seq == self._data_seq:
+            return
+        rows = self._rows
+        if not rows:
+            self._marks = []
+        else:
+            from gateway.strategies import trade_marks   # lazy：strategies 已依賴 indicators，免循環 import
+            ohlc = {k: np.array([r[i] for r in rows], dtype=float)
+                    for k, i in (('o', 1), ('h', 2), ('l', 3), ('c', 4))}
+            self._marks = trade_marks(self._strat, ohlc)
+        self._marks_seq = self._data_seq
+
+    def _draw_marks(self, i0, i1):
+        """B 喺觸發根低點下面、S 喺高點上面；偏移 = 可見 Y 範圍 2%（任何價位自適應）。
+        #29 樣式：圓形徽章 — B = 紅底白字（C_UP）、S = 綠底白字（C_DOWN），跟 gk 語義色唔引入新 hex。
+        #31 BUFFER：策略 `mark_buffer`（預設 10）— 對上一個訊號相隔 ≤N 條 bar 嘅**後續**訊號
+        （cluster：組內首個照徽章）；只睇訊號間距，同 view 位置 / 資料長度無關。0 = 全部徽章。
+        #32 BUFFER 內樣式（用戶：「背景透明純文字..B紅色 S綠字 取消背景圓形及底色」）：
+        冇 bbox、純文字 — B = C_UP 紅字、S = C_DOWN 綠字（alpha 1.0）；組外照舊圓形徽章白字。
+        🤖 放喺 `_ind_artists` 追蹤線之前 → 清除跟指標 artist 同一條鏈（bbox 隨 Text 一齊走）。"""
+        self._ensure_marks()
+        if not self._marks:
+            return
+        from gateway.strategies import clamp_mark_buffer   # lazy：同 _ensure_marks 一致
+        buf = clamp_mark_buffer(self._strat.get('mark_buffer'))
+        plain = set()
+        if buf > 0:   # 升冪掃標記序列：對上一個 ≤buf 條 → 後續訊號入純文字集
+            prev = None
+            for i, _p, _s in sorted(self._marks):
+                if prev is not None and i - prev <= buf:
+                    plain.add(i)
+                prev = i
+        lo, hi = self.ax.get_ylim()
+        off = max(1e-9, (hi - lo) * 0.02)
+        for i, _price, side in self._marks:
+            li = i - self._s
+            if not (i0 <= li < i1):
+                continue
+            r = self._rows[i]
+            if i in plain:   # #32：BUFFER 內 = 背景透明純文字（B 紅 / S 綠），冇圓形底色
+                self.ax.text(li, r[3] - off if side == 'B' else r[2] + off, side,
+                             fontsize=8, fontweight='bold',
+                             color=gk.C_UP if side == 'B' else gk.C_DOWN,
+                             ha='center', va='top' if side == 'B' else 'bottom', zorder=6)
+            elif side == 'B':
+                self.ax.text(li, r[3] - off, 'B', fontsize=8, fontweight='bold',
+                             color='#FFFFFF', ha='center', va='top', zorder=6,
+                             bbox=dict(boxstyle='circle,pad=0.3', fc=gk.C_UP, ec='none'))
+            else:
+                self.ax.text(li, r[2] + off, 'S', fontsize=8, fontweight='bold',
+                             color='#FFFFFF', ha='center', va='bottom', zorder=6,
+                             bbox=dict(boxstyle='circle,pad=0.3', fc=gk.C_DOWN, ec='none'))
 
     @staticmethod
     def _ax_artists(ax):
@@ -1084,8 +1284,10 @@ class IndicatorKlineChart(gk.KlineChart):
         if i1 <= i0:
             return
         x = np.arange(i0, i1, dtype=float)
-        self._ensure_ind_cache()
-        full = self._ind_cache['full']
+        full = {}
+        if self._ind_mgr is not None:
+            self._ensure_ind_cache()
+            full = self._ind_cache['full']
 
         def _slice(inst_id):
             s_full = full.get(inst_id)
@@ -1093,53 +1295,57 @@ class IndicatorKlineChart(gk.KlineChart):
                 return None
             return {name: arr[self._s + i0:self._s + i1] for name, arr in s_full.items()}
 
-        # ── 主圖指標（疊價格軸）：Y fit 要合併 overlay 可見值（parent 淨係 fit h/l）──
-        # 🤖 但 ICT 疊加只計「喺可見價格範圍附近」嘅值，否則歷史區塊會撐大條 Y 軸（見 FAR_OVERLAYS）
-        lo0, hi0 = self.ax.get_ylim()
-        pad = max(1e-9, (hi0 - lo0) * FIT_PAD)
-        main_vals = []
-        for e in self._ind_mgr.items():
-            if not e['enabled'] or e['position'] != 'main':
-                continue
-            d = INDICATOR_DEFS.get(e['def'])
-            sl = _slice(e['id'])
-            if d is None or sl is None:
-                continue
-            _PLOTTERS[d.key](self.ax, x, sl)
-            far = d.key in FAR_OVERLAYS
-            for arr in sl.values():
-                fin = _fit_vals(arr, lo0, hi0, pad) if far else arr[~np.isnan(arr)]
-                if fin.size:
-                    main_vals.append(fin)
-        if main_vals:
-            lo, hi = self.ax.get_ylim()
-            lo = min(lo, min(float(v.min()) for v in main_vals))
-            hi = max(hi, max(float(v.max()) for v in main_vals))
-            self.ax.set_ylim(lo, hi)
+        if self._ind_mgr is not None:
+            # ── 主圖指標（疊價格軸）：Y fit 要合併 overlay 可見值（parent 淨係 fit h/l）──
+            # 🤖 但 ICT 疊加只計「喺可見價格範圍附近」嘅值，否則歷史區塊會撐大條 Y 軸（見 FAR_OVERLAYS）
+            lo0, hi0 = self.ax.get_ylim()
+            pad = max(1e-9, (hi0 - lo0) * FIT_PAD)
+            main_vals = []
+            for e in self._ind_mgr.items():
+                if not e['enabled'] or e['position'] != 'main':
+                    continue
+                d = INDICATOR_DEFS.get(e['def'])
+                sl = _slice(e['id'])
+                if d is None or sl is None:
+                    continue
+                _PLOTTERS[d.key](self.ax, x, sl)
+                far = d.key in FAR_OVERLAYS
+                for arr in sl.values():
+                    fin = _fit_vals(arr, lo0, hi0, pad) if far else arr[~np.isnan(arr)]
+                    if fin.size:
+                        main_vals.append(fin)
+            if main_vals:
+                lo, hi = self.ax.get_ylim()
+                lo = min(lo, min(float(v.min()) for v in main_vals))
+                hi = max(hi, max(float(v.max()) for v in main_vals))
+                self.ax.set_ylim(lo, hi)
 
-        # ── 副圖指標（獨立 panel，各自 y auto-fit 可見 slice）──
-        for e in self._ind_mgr.items():
-            if e['position'] != 'sub' or not e['enabled']:
-                continue
-            a = self._ind_axis.get(e['id'])
-            d = INDICATOR_DEFS.get(e['def'])
-            if a is None or d is None:
-                continue
-            title = f"{d.label} {_params_summary(d, e['params'])}"
-            sl = _slice(e['id'])
-            vals = np.concatenate(list(sl.values())) if sl else np.array([np.nan])
-            fin = vals[~np.isnan(vals)]
-            if fin.size == 0:
-                a.set_ylim(-1.0, 1.0)
-                a.set_title(title + '  —', fontsize=8, color=gk.C_MUTED, loc='left', pad=2)
-                continue
-            _PLOTTERS[d.key](a, x, sl)
-            lo, hi = float(fin.min()), float(fin.max())
-            if hi <= lo:
-                lo, hi = lo - 1.0, hi + 1.0
-            pad = (hi - lo) * 0.06
-            a.set_ylim(lo - pad, hi + pad)
-            a.set_title(title, fontsize=8, color=gk.C_MUTED, loc='left', pad=2)
+            # ── 副圖指標（獨立 panel，各自 y auto-fit 可見 slice）──
+            for e in self._ind_mgr.items():
+                if e['position'] != 'sub' or not e['enabled']:
+                    continue
+                a = self._ind_axis.get(e['id'])
+                d = INDICATOR_DEFS.get(e['def'])
+                if a is None or d is None:
+                    continue
+                title = f"{d.label} {_params_summary(d, e['params'])}"
+                sl = _slice(e['id'])
+                vals = np.concatenate(list(sl.values())) if sl else np.array([np.nan])
+                fin = vals[~np.isnan(vals)]
+                if fin.size == 0:
+                    a.set_ylim(-1.0, 1.0)
+                    a.set_title(title + '  —', fontsize=8, color=gk.C_MUTED, loc='left', pad=2)
+                    continue
+                _PLOTTERS[d.key](a, x, sl)
+                lo, hi = float(fin.min()), float(fin.max())
+                if hi <= lo:
+                    lo, hi = lo - 1.0, hi + 1.0
+                pad = (hi - lo) * 0.06
+                a.set_ylim(lo - pad, hi + pad)
+                a.set_title(title, fontsize=8, color=gk.C_MUTED, loc='left', pad=2)
+
+        # ── #27：策略 B/S 買賣標記（指標關咗照畫；artist 清除跟上面同一條鏈）──
+        self._draw_marks(i0, i1)
 
         # ── X 軸時間標籤遷移到最底軸（parent 硬編碼設咗喺 axv）──
         if self.ax_ind:

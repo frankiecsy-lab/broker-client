@@ -35,7 +35,7 @@ import gateway.state_store as state_store  # noqa: E402
 _TMPDIR = tempfile.mkdtemp()
 state_store.STATE_PATH = Path(_TMPDIR) / 'ui_state.json'   # 🤖 hermetic：tmp state 檔
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QCheckBox  # noqa: E402
 
 app = QApplication.instance() or QApplication([])  # noqa: E402
 
@@ -553,6 +553,31 @@ ipage9.retranslate('en')
 pump()
 check('ICT 參數名三語（label + i18n）',
       _t('ind_p_confirm', 'en') == 'Confirm bars' and 'Confirm bars' in ipage9._param_lbls['confirm'].text())
+
+# #28：MA 逐條線 CHECKBOX（is_bool → 管理頁出 checkbox；摘要 skip bool）
+ipage9.def_combo.setCurrentIndex(ipage9._def_keys.index('ma'))
+pump()
+check('#28 揀 MA → 參數欄 p1..4 spin + show1..4 CHECKBOX（預設全剔）',
+      set(ipage9._param_spins) == {'p1', 'p2', 'p3', 'p4', 'show1', 'show2', 'show3', 'show4'}
+      and all(isinstance(ipage9._param_spins['show%d' % n], QCheckBox)
+              and ipage9._param_spins['show%d' % n].isChecked() for n in (1, 2, 3, 4)))
+ipage9._param_spins['show2'].setChecked(False)
+ipage9.add_btn.click()
+pump()
+ma9 = next(e for e in ipage9._mgr().items() if e['def'] == 'ma')
+check('#28 新增 MA（MA2 唔剔）→ show2=0 入 manager、其他照 1',
+      ipage9.model.rowCount() == 4 and ma9['params']['show2'] == 0 and ma9['params']['show1'] == 1)
+check('#28 參數摘要 skip bool：照舊「5/10/20/60」',
+      ipage9.model.data(ipage9.model.index(3, _CI['params'])) == '5/10/20/60')
+ipage9.table.selectRow(3)
+pump()
+check('#28 揀行 → CHECKBOX 反映返存嘅狀態（show2 冇剔）',
+      ipage9._sel_id == ma9['id'] and not ipage9._param_spins['show2'].isChecked()
+      and ipage9._param_spins['show1'].isChecked())
+ipage9._param_spins['show2'].setChecked(True)
+ipage9.save_btn.click()
+pump()
+check('#28 剔返再套用 → params.show2=1', ipage9._mgr().get(ma9['id'])['params']['show2'] == 1)
 
 # ══ Part 10：ICT 全套繪畫 + 一行描寫 / 可摺疊詳情（ticket #21）═════════════
 print('\n── Part 10: ICT 全套繪畫 + 說明欄 / 可摺疊詳情 ──')

@@ -331,7 +331,7 @@ def _random_ok():
 # ══════════ Registry / i18n：每個指標都要有一行描寫 + 用法 + 每個參數一行解釋 ══════════
 print('\n[R] INDICATOR_DEFS / i18n（三語 fail-fast）')
 DEFS = list(INDICATOR_DEFS.values())
-check('14 個 def（3 舊 + 3 OB 家族 + 8 新 ICT）', len(DEFS) == 14)
+check('17 個 def（3 舊 + 3 常用 MA/KDJ/RSI + 3 OB 家族 + 8 新 ICT）', len(DEFS) == 17)
 check('全部 def 都有 desc_key + usage_key', all(d.desc_key and d.usage_key for d in DEFS))
 check('全部參數都有 note_key', all(p.note_key for d in DEFS for p in d.params))
 keys = [k for d in DEFS for k in (d.desc_key, d.usage_key)] + \
@@ -348,8 +348,9 @@ for k in sorted(set(keys)):
 check('每個 desc / 用法 / 參數名 / 參數解釋三語都有非空字串（%d 個 key）' % len(set(keys)), not missing)
 if missing:
     print('     ❌ 缺：' + ', '.join(missing[:12]))
-check('ICT def 全部 position=main（價格軸上嘅區塊/水平位）',
-      all(d.positions == ('main',) for d in DEFS if d.key not in ('boll', 'atr', 'macd')))
+check('ICT def 全部 position=main（貼價/擺蕩指標除外）',
+      all(d.positions == ('main',) for d in DEFS
+          if d.key not in ('boll', 'atr', 'macd', 'kdj', 'rsi')))
 check('全部 def 都有 callable compute 且 warmup ≥ 0', all(callable(d.compute) and d.warmup >= 0 for d in DEFS))
 check('全部參數預設喺 lo/hi 範圍內', all(p.lo <= p.default <= p.hi for d in DEFS for p in d.params))
 
@@ -429,9 +430,9 @@ check('_fit_vals 只保留 [lo−pad, hi+pad] 內嘅有限值（100/104.9 入閘
 check('_fit_vals 全 NaN → 返回空陣列（唔會炸）', _fit_vals(np.full(5, np.nan), 0.0, 1.0, 0.1).size == 0)
 check('_fit_vals 唔改可視範圍內嘅值（貼價指標照樣全量參與 fit）',
       _fit_vals(np.array([99.0, 100.0, 104.0]), 100.0, 104.0, 1.0).size == 3)
-ICT_MAIN = {d.key for d in DEFS if d.positions == ('main',) and d.key not in ('boll',)}
-check('FAR_OVERLAYS = 全部 ICT main 疊加（%d 個），貼價線 BOLL/ATR/MACD 一律唔入閘' % len(ICT_MAIN),
-      set(FAR_OVERLAYS) == ICT_MAIN and not ({'boll', 'atr', 'macd'} & set(FAR_OVERLAYS)))
+ICT_MAIN = {d.key for d in DEFS if d.positions == ('main',) and d.key not in ('boll', 'ma')}
+check('FAR_OVERLAYS = 全部 ICT main 疊加（%d 個），貼價線 BOLL/MA/ATR/MACD 一律唔入閘' % len(ICT_MAIN),
+      set(FAR_OVERLAYS) == ICT_MAIN and not ({'boll', 'ma', 'atr', 'macd'} & set(FAR_OVERLAYS)))
 
 print('\n' + ('❌ FAILURES: %d — %s' % (len(FAILURES), FAILURES) if FAILURES else '✅ 全部通過'))
 sys.exit(1 if FAILURES else 0)

@@ -30,12 +30,13 @@ from gateway.pages.futu_trade_page import FutuTradePage
 from gateway.pages.indicators_page import IndicatorsPage
 from gateway.pages.kline_page import KlinePage
 from gateway.pages.quotes_page import QuotesPage
+from gateway.pages.strategies_page import StrategiesPage
 from gateway.pages.symbol_list_page import SymbolListPage
 from gateway.theme import apply_theme
 
 # ── 頁面 registry：nav 按鈕 + QStackedWidget 全部由呢個 list 生成 ──
 PAGE_KEYS = ('home', 'quotes', 'kline', 'fulltest', 'connection', 'futu_trade',
-             'symbol_list', 'favorites', 'indicators')
+             'symbol_list', 'favorites', 'indicators', 'strategies')
 _PAGE_CLASSES = {
     'home': HomePage,
     'quotes': QuotesPage,
@@ -46,9 +47,10 @@ _PAGE_CLASSES = {
     'symbol_list': SymbolListPage,
     'favorites': FavoritesPage,
     'indicators': IndicatorsPage,
+    'strategies': StrategiesPage,
 }
 # ── nav 分組（用戶要求）：直接按鈕 vs 子選單（收藏 = 功能頁 → 直接按鈕；指標管理 = 用戶指定頂層直按）──
-NAV_DIRECT = ('home', 'quotes', 'futu_trade', 'favorites', 'indicators')
+NAV_DIRECT = ('home', 'quotes', 'futu_trade', 'favorites', 'indicators', 'strategies')
 NAV_MENUS = {'test': ('kline', 'fulltest', 'symbol_list'),
              'settings': ('connection',)}
 

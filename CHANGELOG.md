@@ -6,6 +6,70 @@
 
 ## 2026-10-08
 
+### MINOR：策略 slim model（刪標的/生效期）+ BUFFER 內訊號改純文字（B紅字/S綠字冇底色）
+檔案：`gateway/strategies.py`、`gateway/pages/strategies_page.py`、`gateway/pages/quotes_page.py`、`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_strategy_conditions.py`、`.scratch/test_fade_scale.py`、`.scratch/e2e_gui_strategies.py`、`.scratch/e2e_gui_quotes.py`
+- **要求**（用戶）：「策略內容刪除標的和生效期」「BUFFER 來的買賣SIGNAL 由淺色改為背景透明純文字..B紅色 S綠字 取消背景圓形及底色」。
+- **模型**：entry 刪 `code`/`validity`（連 `created`/`is_active` 狀態鏈一併走 — #30 已全格套用，標的欄本來冇作用）；`add/update/_validate` 跟 slim；舊檔多餘欄 `_sanitize` 容忍 load 直接忽略 = 零遷移。策略頁表單刪標的輸入 + 生效期 combo、表刪 標的/生效期/狀態/創建日（剩 名稱/買/賣 三欄）；i18n 相鍵清理；行情頁下拉 label 由「name · code」改「name」。
+- **繪畫**：`_draw_marks` BUFFER 內（對上一個 ≤`mark_buffer` 條，#31 語義唔動）→ 冇 bbox 純文字，B=`gk.C_UP` 紅 / S=`gk.C_DOWN` 綠；組外照舊圓形徽章白字。`MARK_FADE_ALPHA` 退役。
+- **驗證**：`test_fade_scale` 加逐個樣式斷言（純文字冇 bbox + 紅/綠字 vs 徽章同色白字）；`e2e_gui_strategies` 改 slim entry／三欄表／容忍 load（52 i18n 鍵 ×3）；`e2e_gui_quotes` Part 6.6 改 @4/@7 純文字紅綠、@2 徽章 + listener 改 BUFFER 即時全徽章；`test_strategy_conditions` 刪生效期段 + 加多餘欄忽略斷言 — 7 個測試全綠 ✅。
+
+### PATCH：BUFFER 語義更正 — 淡化「對上一個訊號相隔 ≤N 條 bar」嘅後續 B/S（cluster）
+檔案：`gateway/indicators.py`、`gateway/strategies.py`、`gateway/pages/strategies_page.py`（註釋）、`.scratch/e2e_gui_quotes.py`、`.scratch/test_fade_scale.py`
+- **要求**（用戶，screenshot）：「這個B S B..在BUFFER 之內..，後的SB 應該要變淺色」。對返 #29 原文「10條BAR內**出現買賣訊號**，將買賣訊號的顏要淺一點」— 語義係**訊號之間**相隔 N 條 bar，唔係「對最新 bar 計返 N 條」。
+- **診斷**：舊實裝 `i >= len(rows) - buf`；真實 app 每格 ~1000 bars（futu `kline_num` 預設）→ 淡化區 = 全資料最後 N 條，zoom 睇中間段永遠全部實色 = 用戶兩度反映嘅根因。
+- **改法**：`_draw_marks` 升冪掃 marks 序列：對上一個相隔 ≤`mark_buffer` 條 → 後續訊號 alpha 淡化；組內首個照實色；0 = 全部實色。只睇訊號間距，同 view 位置／資料長度無關 → zoom／平移／串流任何位置都穩定。entry 欄、clamp、UI spinbox、listener 全部唔動。
+- **驗證**：`test_fade_scale` 重寫為 cluster 回歸（Part A 200 bars 逐個 alpha = 規則；Part B 合成 marks 證明兩個方向：中間段會淡、最後 N 條內但距遠照實）；`e2e_gui_quotes` Part 6.6 斷言改 @4/@7 淡、@2 實（buffer=3）；`e2e_gui_strategies` / `test_strategy_conditions` / 指標三套回歸全綠 ✅。
+
+### MINOR：策略 B/S 套用全部 K 圖（1/2/4/6）+ 策略改動即時同步（listener）
+檔案：`gateway/strategies.py`、`gateway/pages/quotes_page.py`、`.scratch/e2e_gui_quotes.py`、`.scratch/e2e_gui_strategies.py`
+- **要求**（用戶）：「BUFFER 的買賣訊號在BUFFER 中没有變淺色」「買賣訊號及指標要同時套用在行程的全部K綫圖1,2,4,6图」。
+- **診斷**：淡化機制本身 E2E 已驗證（得最新 bar 對開 N 條內先淡化）；真正缺口 = ①策略只注入標的 match 嘅格 → 其他圖完全冇訊號 ②策略頁做彈出窗時行情頁唔會 showEvent → 改 BUFFER 冇反應（舊 entry 副本）。指標本來已全格注入，唔使改。
+- **改法**：`_apply_strategy_to_cells` 去 match gate → 揀咗策略即注入全部 6 格，每格用自己數據計 B/S = 同一套規則逐格同時套用（冇數據嘅格自然空）。`StrategyManager` 加 `add_listener/_notify`（照 `IndicatorManager` 模式，add/update/remove 成功後通知）；行情頁註冊 `_on_strat_config` → 任何 origin（含彈出策略頁）改規則/BUFFER 即時 rebuild 下拉 + re-apply 全部格；改標的唔再需要 re-apply。
+- **驗證**：`e2e_gui_quotes` Part 6.6 反轉 cell1 斷言（唔同標的都有 B@2）+ listener 檢查（`update mark_buffer=0` → 唔使重新揀，cell0/cell1 即時全實色）；`e2e_gui_strategies` +2（add/update/remove 通知、失敗唔通知）全綠 ✅；`test_strategy_conditions` / `e2e_gui_indicators` / `test_indicators_common` / `test_ict_suite` 回歸全綠。
+
+### MINOR：策略訊號 BUFFER — 最近 N 條 bar 內嘅 B/S 標記淡化（N 喺策略頁可調）
+檔案：`gateway/strategies.py`、`gateway/pages/strategies_page.py`、`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_strategy_conditions.py`、`.scratch/e2e_gui_strategies.py`、`.scratch/e2e_gui_quotes.py`
+- **要求**（用戶）：「買賣訊號要加一個BUFFER …10條BAR內出現買賣訊號，將買賣訊號的顏要淺一點…呢個數字可以在策略里調整」。
+- **模型**：entry 新欄 `mark_buffer`（int 0–200，預設 10，0 = 全部實色）；`clamp_mark_buffer` 單一 clamp 點；`_sanitize` 容忍舊檔自動補預設 = 零遷移；`add/update` 加可選參數（update None = 唔改該欄）。
+- **UI**：策略頁表單加「訊號BUFFER(條)」QSpinBox（`str_buffer_spin`，0–200）— 新增/回填/清空/套用全部跟現有表單鏈；i18n `str_buffer_lbl` 三語。
+- **繪畫**：`_draw_marks` 現讀 `len(rows)` → `i >= len(rows) - buf` 嘅徽章 Text+bbox 一齊 `alpha=MARK_FADE_ALPHA(0.45)`；只影響繪畫，marks cache 契約唔動 → 串流加 bar 舊標記自動變實色。順手修正：`set_strategy(None)` 殘留舊 marks（而家清返空）。
+- **驗證**：`test_strategy_conditions` +2（clamp／舊檔補欄）；`e2e_gui_strategies` +5（預設 10、update roundtrip/clamp、spinbox 存在、JSON mark_buffer、回填+跟改）；`e2e_gui_quotes` Part 6.6 改 mark_buffer=3 → 斷言得 @7 淡化（text+bbox alpha）、@2/@4 實色，徽章色斷言改比較 fc rgb 部分（alpha 喺 a 通道）全綠 ✅；`e2e_gui_indicators` / `test_indicators_common` / `test_ict_suite` 回歸全綠。
+
+### PATCH：B/S 標記改圓形徽章（紅/綠底白字）
+檔案：`gateway/indicators.py`、`.scratch/e2e_gui_quotes.py`
+- **要求**（用戶）：「B 和S 標記改為圓形紅色白字，圓形綠色白字圖案」。
+- **做法**：`_draw_marks` 喺 Text 加 `bbox=dict(boxstyle='circle,pad=0.3', fc=…, ec='none')`，字色改 `#FFFFFF`；底色直接用 `gk.C_UP`（紅）/`gk.C_DOWN`（綠）語義色，唔引入新 hex。位置/偏移/清除鏈完全唔動（bbox 隨 Text artist 一齊走）。
+- **驗證**：`e2e_gui_quotes` Part 6.6 新增 #29 斷言（B/S 白字 + bbox fc == C_UP/C_DOWN）；`test_indicators_common` / `test_strategy_conditions` 回歸全綠 ✅。
+
+### MINOR：MA 逐條線顯示開關（CHECKBOX）+ 行情頁「指標選項」menu 逐個揀
+檔案：`gateway/indicators.py`、`gateway/pages/indicators_page.py`、`gateway/pages/quotes_page.py`、`gateway/i18n.py`、`.scratch/test_indicators_common.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/e2e_gui_quotes.py`
+- **要求**（用戶）：「MA 四個週期每個加CHECKBOX 可以切換是否顯示，行中顯示指標要個別選擇」。
+- **單一事實來源，唔新增狀態層**：MA 逐線可見性 = 執行個體參數 `show1..4`（`ParamSpec.is_bool` 新欄，預設 1）→ 管理頁參數欄自動出 QCheckBox；`compute_ma` 對 showN=0 **唔輸出該 key** → 唔畫、唔入 Y-fit（`_plot_ma` 用 `.get`）；`_params_summary` skip bool → 摘要/panel 標題照舊「5/10/20/60」；`_sanitize` 自動補預設 = 舊存檔實例零遷移。改參數 → config_version bump → cache 失效 = 串流照同步。
+- **行情頁**：頂欄加「指標選項」menu（QToolButton+QMenu，aboutToShow 每次重建）— 逐個指標 checkable→`set_enabled`（食 manager 嘅 enabled，同 K線頁掣列／管理頁 checkbox 天然雙向同步）；MA 實例 sub-menu 四條線→`update(params={'showN'})`。總開關保留＝頁面級 all-off，唔碰全局；總開關關住 menu 灰咗。i18n 新增 `ind_p_show1..4`/`ind_n_ma_show`/`quotes_ind_menu` 三語。
+- **驗證**：`test_indicators_common` +5 項（showN=0→key 缺席／缺 key 當顯示／is_bool clamp／摘要 skip）；`e2e_gui_indicators` +5 項（管理頁 checkbox 新增/回填/套用 + 摘要唔變）；`e2e_gui_quotes` 新增 Part 6.7（menu 逐實例 checkable→enabled 同源、MA sub-menu show2=0→cache 冇 ma2 + artist 少一條、開返返 cache）全綠 ✅；`test_ict_suite` / `e2e_gui_strategies` 回歸全綠。
+
+### MINOR：行情頁 — 顯示指標總開關 + 策略 B/S 買賣標記（串流自動同步）
+檔案：`gateway/pages/quotes_page.py`、`gateway/indicators.py`、`gateway/strategies.py`、`gateway/i18n.py`、`.scratch/test_strategy_conditions.py`、`.scratch/e2e_gui_quotes.py`
+- **要求**（用戶）：「在行程頁面增加顯示指標選項，另外增加一個策略選項，點選那個策略，就在K圖中的買點賣點做B 和 S 的標記，因為K綫是串流的，K綫刷新了也要將指標和策略買賣點同步更新」。
+- **同步靠結構**：6 格 chart 換 `IndicatorKlineChart`；指標 cache 與新增 marks cache 都以 `_data_seq` 為 key，`set_bars`（串流必經）先 bump → 任何 K 線刷新自動重算，唔需要手動 refresh。
+- **B/S 契約**：`strategies.trade_marks(entry, ohlc)` 純函數 = `score_series`→`trigger_indices`（同 live 觸發一模一樣），價＝觸發根收盤，輸出升冪 `[(bar, 價, 'B'/'S')]`；chart `set_strategy(entry|None)` 畫標記（B 喺低點下面、S 喺高點上面），指標關咗照畫、artist 清除同一條鏈。
+- **頁面**：頂欄「顯示指標」checkable 掣（開＝注入 manager，跟指標管理頁配置，listener 即時跟）+ 策略下拉（無策略＋清單）；逐格標的 canonical == 策略 code 先注入；`ind_shown`/`strategy` 入 state_store 'quotes' 記憶；i18n 3 鍵三語。順帶 FIX：改標的時清 `_pending_df` — 舊標的 pending rows 唔會 250ms 後蓋住錯誤 label（原本 e2e flaky 根源）。
+- **驗證**：`test_strategy_conditions` +6 項 trade_marks；`e2e_gui_quotes` 新增 Part 6.6（開關砌/拆 panel、dropdown match、B@2→串流 8 bars 自動變 B@2 S@4 B@7、關指標 B/S 照留、記憶還原）全綠 ✅；`e2e_gui_indicators` / `e2e_gui_strategies` / `test_ict_suite` / `test_indicators_common` 回歸全綠；`e2e_gui_fulltest` 4 項 stream 檢查為 live 網絡偶發延遲（重跑全過，路徑冇改動）。
+
+### MINOR：指標管理 — 常用指標 MA（主圖 4 條 SMA）/ KDJ / RSI（副圖）
+檔案：`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_indicators_common.py`、`.scratch/test_ict_suite.py`
+- **要求**（用戶）：「指標加一個MA、MACD KDJ 等常用指標」。MACD 已內置，實際新增 MA / KDJ / RSI；管理頁由 registry 自動生成 def combo／參數欄，**零 UI 改動**。
+- **MA**：一個 def、4 個週期參數（預設 5/10/20/60，尊重總 6 上限），同 BOLL mid 同一 pandas `rolling` 契約；**唔入 `FAR_OVERLAYS`**（貼價線照舊全量參與 Y-fit）。**KDJ**：華語慣例 — RSV=(c−LLV)/(HHV−LLV)×100（平穩段=50），K/D 遞推 `K+=(RSV−K)/m` seed 50（唔係 simple mean／ewm），J=3K−2D。**RSI**：Wilder seed+遞推（同 `compute_atr` 風格），只升=100／全平=50 如實。圖色只用現有 palette 常量。
+- **i18n**：`ind_desc/use_ma·kdj·rsi` + 新 `ind_p_p1..p4/n/m1/m2/period` + `ind_n_*`（三語）；指標名語種中立 acronym，唔使 i18n。
+- **驗證**：新增 `test_indicators_common` 16 項（MA/KDJ/RSI 逐個手砌期望值 + MA==BOLL mid 同契約 + J 恆等式 + registry 掛鉤）；`test_ict_suite` registry 斷言跟更新（17 def、FAR_OVERLAYS 排除 MA）；`e2e_gui_indicators` 全通過 ✅。
+
+### One Gate 策略管理頁（Page 8）— 分數制條件（MA/BOLL/VOB 累加 ≥100 觸發）+ BACKTEST 兼容儲存
+檔案：`gateway/strategies.py`、`gateway/pages/strategies_page.py`、`gateway/i18n.py`、`gateway/app.py`、`.scratch/test_strategy_conditions.py`、`.scratch/e2e_gui_strategies.py`
+- **要求**（用戶，兩輪）：主選單加「策略」頁 — 新增/修改/刪除、本地保存、兼容日後 BACKTEST；標的、買入條件（如 MA20>MA120）、賣出條件、VOB/BOLL 穿線、買入價=市價、數量=最低一手、生效期 1日/7日/永久。第二輪改做**分數制**：「買賣每個條件按不同的分數，累加起來超過買100分或賣100分就交易」。
+- **領域層** `gateway/strategies.py`：`CONDITION_DEFS`（ma_cross / boll_cross / vob_break，`CondParamSpec` 範圍 + 計算直接重用 indicators `compute_boll`/`compute_vob`）；**分數契約** `rule_signal`（per-bar bool）→ `score_series`（分數累加）→ `trigger_indices`（≥100 rising edge）— rules 純 JSON，live 與 backtest 同一份；`entry_price:'market'` / `qty:'min_lot'` 存 mode enum（一手量執行時先解析）；生效期 `is_active`；`StrategyManager`（dedupe / 部分 update / 容忍 load）→ state_store section `strategies`。
+- **頁面** `gateway/pages/strategies_page.py`：表格（含語言中立條件摘要 `MA20>MA120 (+60)` / 生效期 / 狀態即時）+ `_CondEditor`（類型/方向/動態參數欄隨 spec 生成/分數 SpinBox，draft 行 + ✕ 移除）+ 標的模糊輸入 + 三語；app.py 註冊 PAGE_KEYS / NAV_DIRECT。
+- **驗證**：`test_strategy_conditions` 21 項 + `e2e_gui_strategies` 33 項（hermetic：Manager CRUD / 頁面 CRUD / JSON 結構 / 過期顯示 / 三語 + 65 i18n 鍵 × 3 語言 / shell 註冊）全部通過 ✅。
+
 ### FIX：FVG 區塊重寫 — 近邊填平 + 同向取代（唔准斷續、唔准拖太長）
 檔案：`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_ict_suite.py`
 - **要求**（用戶，兩輪）：「FVG 有斷續」→「不應讓間斷也不應該那麼長」。真數據（HSI 1M）診斷：① 同向區塊重疊落 `_zones_to_arrays` 被「較新者覆蓋」逐 bar 切走 → 一個區塊砌成幾截；② 填平條件係「完全填平」（low ≤ 區塊底 / high ≥ 區塊頂），單邊行情下區塊一直畫到最後一根（實測 26-28 根）。

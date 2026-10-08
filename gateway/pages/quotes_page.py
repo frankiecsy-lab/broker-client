@@ -9,7 +9,13 @@
 - **串流**：單 QThread + asyncio loop，每格一條 `BrokerClient.stream_kline`（first yield = baseline
   → 圖 + 價；其後 = live tick，250ms throttle redraw）— 多路並發 + token 作廢 stale，
   照 gateway/pages/gui_fulltest.py TestWorker._start_live 已驗證 pattern。
-- **本地記憶**：所有格嘅標的/週期 + layout → `gateway/state_store.py` 統一 JSON（邊改邊 save，啟動 load）。
+- **#27 指標 / 策略標記**：頂欄「顯示指標」總開關（開 = 注入 `IndicatorManager`，所有格跟指標管理頁配置）+
+  策略下拉（#30：揀咗 = 注入**全部格**，每格用自己數據計 B/S = 同一套規則同時套用到 1/2/4/6 全部 K 圖）。
+  `IndicatorKlineChart` 嘅指標/marks cache 以 data_seq 為 key → **串流刷新自動同步**，唔需要额外重算觸發。
+  #30：`StrategyManager.add_listener` → 策略頁（包括彈出窗）改規則/BUFFER → 下拉 + 全部格即時跟。
+- **#28 指標選項 menu**：逐個指標 checkable（= manager `enabled`，同 K線頁/管理頁雙向同步）；MA 實例
+  sub-menu 逐條線（params `show1..4`，0 → 唔畫、唔入 Y-fit）。總開關保留 = 頁面級 all-off。
+- **本地記憶**：所有格嘅標的/週期 + layout + 指標開關/策略 id → `gateway/state_store.py` 統一 JSON（邊改邊 save，啟動 load）。
   標的經 symbol index canonical 大細階還原（HK.HSImain 細階 main — 同交易頁同一把尺）。
 - **Theme**：照 kline_page recipe（reassign gk.C_* + chart._redraw()）；頁面級 QSS template。
 
@@ -28,10 +34,12 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject  # noqa: E402
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from gateway.pages import gui_kline as gk  # noqa: E402 — 同目錄 app 組件：重用 KlineChart / _fmt_big
+import gateway.indicators as indicators  # noqa: E402 — #27：IndicatorKlineChart（指標 + B/S 標記）
 import gateway.theme as theme_mod  # noqa: E402
 from gateway import state_store  # noqa: E402
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
@@ -260,7 +268,7 @@ class ChartCell(QWidget):
             self._period_btns[kt] = b
         v.addLayout(per)
 
-        self.chart = gk.KlineChart(self)
+        self.chart = indicators.IndicatorKlineChart(self)   # #27：未注入 manager/策略時行為同 gk.KlineChart
         v.addWidget(self.chart, 1)
 
     # --- 狀態 ---
@@ -322,6 +330,8 @@ class QuotesPage(QWidget):
 
         st = state_store.load_section('quotes', {})
         self._layout = st.get('layout') if st.get('layout') in LAYOUTS else '1x1'
+        self._ind_shown = bool(st.get('ind_shown', False))       # #27
+        self._strategy_id = str(st.get('strategy', '') or '')     # #27
         cells_st = st.get('cells')
         if not isinstance(cells_st, list) or len(cells_st) != N_CELLS:
             cells_st = [dict(d) for d in DEFAULT_CELLS]
@@ -330,8 +340,35 @@ class QuotesPage(QWidget):
         v.setContentsMargins(10, 8, 10, 10)
         v.setSpacing(6)
 
-        # ── 頂欄：右上方 4 個 layout 按鈕（用戶要求）──
+        # ── 頂欄：左 = #27 指標開關 + 策略下拉｜右 = 4 個 layout 按鈕（用戶要求）──
         bar = QHBoxLayout()
+        self.ind_toggle = QPushButton(t('quotes_ind_show', self._lang))
+        self.ind_toggle.setProperty('og', 'indtoggle')
+        self.ind_toggle.setCheckable(True)
+        self.ind_toggle.setChecked(self._ind_shown)
+        self.ind_toggle.clicked.connect(lambda _c=False: self._on_ind_toggle())
+        bar.addWidget(self.ind_toggle)
+        # #28：「指標選項」menu — 逐個指標 checkable（= manager enabled，同 K線頁/管理頁雙向同步）；
+        # MA 實例另有 sub-menu 逐條線 show1..4。總開關 ind_toggle 保留（頁面級 all-off，唔碰全局）。
+        self.ind_menu_btn = QToolButton()
+        self.ind_menu_btn.setObjectName('ind_menu_btn')
+        self.ind_menu_btn.setProperty('og', 'indmenu')
+        self.ind_menu_btn.setText(t('quotes_ind_menu', self._lang))
+        self.ind_menu_btn.setPopupMode(QToolButton.InstantPopup)
+        self.ind_menu_btn.setEnabled(self._ind_shown)
+        self._ind_menu = QMenu(self.ind_menu_btn)
+        self._ind_menu.aboutToShow.connect(self._rebuild_ind_menu)   # 每次開都食最新 manager 狀態
+        self.ind_menu_btn.setMenu(self._ind_menu)
+        self._ind_acts = {}          # iid → QAction（E2E hook）
+        self._ma_show_acts = {}      # (iid, n) → QAction（E2E hook）
+        bar.addWidget(self.ind_menu_btn)
+        self._strat_lbl = QLabel(t('quotes_strategy_label', self._lang))
+        self._strat_lbl.setObjectName('strat_label')
+        bar.addWidget(self._strat_lbl)
+        self.strat_combo = QComboBox()
+        self.strat_combo.setObjectName('strat_combo')
+        self.strat_combo.currentIndexChanged.connect(self._on_strategy_choice)
+        bar.addWidget(self.strat_combo)
         bar.addStretch(1)
         self._layout_btns = {}
         for name in LAYOUTS:
@@ -357,6 +394,14 @@ class QuotesPage(QWidget):
             cell.set_state(str(cs.get('symbol', '')), str(cs.get('period', 'K_1M')))
             self.cells.append(cell)
         v.addLayout(self.grid, 1)
+
+        # ── #27：還原指標開關 / 策略（cells 起齊先至 apply 到每格 chart）──
+        self._rebuild_strategy_combo()
+        self._apply_indicator_toggle()
+        self._apply_strategy_to_cells()
+        indicators.get_manager().add_listener(self._on_ind_config)   # 指標管理頁改配置 → 即時跟
+        from gateway import strategies as strat
+        strat.get_manager().add_listener(self._on_strat_config)      # #30：策略頁改規則/BUFFER → 即時跟
 
         # ── worker（client_factory late-bind：構造 win 之後先注入 fake 都生效）──
         # 注意：GridWorker 會 CALL 呢個 factory 攞 client — 要 call 返注入嘅 factory，
@@ -450,10 +495,92 @@ class QuotesPage(QWidget):
         if save:
             self._save_state()
 
+    # ── #27：指標總開關 / 策略下拉（B/S 標記；同步靠 IndicatorKlineChart cache，呢度只管注入）──
+    def _on_ind_toggle(self):
+        self._ind_shown = self.ind_toggle.isChecked()
+        self.ind_menu_btn.setEnabled(self._ind_shown)   # #28：關住指標 → 逐個揀冇意義，灰咗
+        self._apply_indicator_toggle()
+        self._save_state()
+
+    def _apply_indicator_toggle(self):
+        mgr = indicators.get_manager() if self._ind_shown else None
+        for cell in self.cells:
+            cell.chart.set_indicator_manager(mgr)
+            cell.chart._redraw()
+
+    def _on_ind_config(self, origin, kind):
+        """指標配置變（任何 origin，包括本頁 menu）→ 開住即 redraw。"""
+        if not self._ind_shown:
+            return
+        for cell in self.cells:
+            cell.chart.mark_indicators_dirty()
+            cell.chart._redraw()
+
+    # ── #28：指標選項 menu — 逐個指標 checkable = manager enabled（同 K線頁掣列/管理頁天然同步）；
+    #    MA 實例加 sub-menu 逐條線（params show1..4）。aboutToShow 每次重建 = 永遠食最新狀態。──
+    def _rebuild_ind_menu(self):
+        mgr = indicators.get_manager()
+        self._ind_menu.clear()
+        self._ind_acts = {}
+        self._ma_show_acts = {}
+        for e in mgr.items():
+            d = indicators.INDICATOR_DEFS[e['def']]   # items() 嘅 'def' 係 def key 字串
+            act = self._ind_menu.addAction(
+                '%s · %s' % (d.label, indicators._params_summary(d, e['params'])))
+            act.setCheckable(True)
+            act.setChecked(bool(e['enabled']))
+            act.triggered.connect(
+                lambda _c, iid=e['id'], a=act: mgr.set_enabled(iid, a.isChecked(), origin='quotes_page'))
+            self._ind_acts[e['id']] = act
+            if d.key == 'ma':   # MA 逐條線 → showN=0 → compute 唔輸出 key = 唔畫、唔入 Y-fit
+                sub = self._ind_menu.addMenu('MA')
+                for n in (1, 2, 3, 4):
+                    sa = sub.addAction('MA %s' % e['params'].get('p%d' % n, ''))
+                    sa.setCheckable(True)
+                    sa.setChecked(bool(int(e['params'].get('show%d' % n, 1))))
+                    sa.triggered.connect(
+                        lambda _c, iid=e['id'], k='show%d' % n, a=sa:
+                        mgr.update(iid, params={k: 1 if a.isChecked() else 0}, origin='quotes_page'))
+                    self._ma_show_acts[(e['id'], n)] = sa
+
+    def _rebuild_strategy_combo(self):
+        from gateway import strategies as strat   # lazy — 開行情頁先至碰策略 domain
+        self.strat_combo.blockSignals(True)
+        self.strat_combo.clear()
+        self.strat_combo.addItem(t('quotes_strategy_none', self._lang), '')
+        for e in strat.get_manager().items():
+            self.strat_combo.addItem(e['name'], e['id'])   # #32：策略冇標的欄，label 只剩名稱
+        self.strat_combo.setCurrentIndex(max(0, self.strat_combo.findData(self._strategy_id)))
+        self._strategy_id = self.strat_combo.currentData() or ''
+        self.strat_combo.blockSignals(False)
+
+    def _on_strategy_choice(self):
+        self._strategy_id = self.strat_combo.currentData() or ''
+        self._apply_strategy_to_cells()
+        self._save_state()
+
+    def _apply_strategy_to_cells(self):
+        """#30：揀咗策略 → 全部格都注入（用戶要求：1/2/4/6 全部 K 線圖同時套用）；
+        B/S 每格用自己數據重算 = 同一套規則逐格計（冇數據嘅格自然空）。"""
+        entry = None
+        if self._strategy_id:
+            from gateway import strategies as strat
+            entry = strat.get_manager().get(self._strategy_id)
+        for cell in self.cells:
+            cell.chart.set_strategy(entry)
+            cell.chart._redraw()
+
+    def _on_strat_config(self, origin, kind):
+        """策略變（任何 origin，包括策略頁/彈出策略頁）→ 下拉 + 全部格即時跟（#30）。"""
+        self._rebuild_strategy_combo()
+        self._apply_strategy_to_cells()
+
     # ── 用戶輸入 → 重取數 + 記憶 ──
     def _on_cell_symbol(self, cid, code):
         cell = self.cells[cid]
         self._bump_token(cid)   # 先作廢舊 stream 所有 in-flight update（哪怕随后先 stop）
+        self._pending_df.pop(cid, None)   # 舊標的嘅 pending rows 一并丟 — 唔好 250ms 後蓋住新狀態（錯誤 label／空圖）
+        # #30：策略注入晒全部格、唔再 match 標的 → 改標的唔使 re-apply
         if not code:
             if self._worker is not None:
                 self._worker.stop_cell(cid)
@@ -508,6 +635,8 @@ class QuotesPage(QWidget):
         state_store.save_section('quotes', {
             'layout': self._layout,
             'cells': [c.state() for c in self.cells],
+            'ind_shown': self._ind_shown,     # #27
+            'strategy': self._strategy_id,    # #27
         })
 
     # ── theme（照 kline_page recipe：reassign gk.C_* + redraw）──
@@ -531,9 +660,19 @@ class QuotesPage(QWidget):
     # ── i18n ──
     def retranslate(self, lang):
         self._lang = lang
+        self.ind_toggle.setText(t('quotes_ind_show', lang))
+        self.ind_menu_btn.setText(t('quotes_ind_menu', lang))   # #28
+        self._strat_lbl.setText(t('quotes_strategy_label', lang))
+        self._rebuild_strategy_combo()   # 「無策略」item 跟語言
         for cell in self.cells:
             cell.symbol_edit.setPlaceholderText(t('quotes_symbol_ph', lang))
             cell.completer.lang = lang   # 🤖 display_for 直接食 GUI 語言碼（zh_cn 唔會再被轉做繁體）
+
+    # ── #27：每次入頁都 refresh 策略下拉（策略頁可能新增/刪除咗）──
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._rebuild_strategy_combo()
+        self._apply_strategy_to_cells()
 
     # ── 清理 ──
     def _on_app_quit(self):
@@ -558,6 +697,19 @@ QPushButton[og="layoutbtn"] { color: $muted; background: transparent; border: 1p
     border-radius: 4px; padding: 4px 10px; font-size: 12px; }
 QPushButton[og="layoutbtn"]:hover { color: $text; border-color: $accent; }
 QPushButton[og="layoutbtn"]:checked { color: #FFFFFF; background-color: $accent; border-color: $accent; font-weight: bold; }
+QPushButton[og="indtoggle"] { color: $muted; background: transparent; border: 1px solid $border;
+    border-radius: 4px; padding: 4px 10px; font-size: 12px; }
+QPushButton[og="indtoggle"]:hover { color: $text; border-color: $accent; }
+QPushButton[og="indtoggle"]:checked { color: #FFFFFF; background-color: $accent; border-color: $accent; font-weight: bold; }
+QToolButton[og="indmenu"] { color: $muted; background: transparent; border: 1px solid $border;
+    border-radius: 4px; padding: 4px 10px; font-size: 12px; }
+QToolButton[og="indmenu"]:hover { color: $text; border-color: $accent; }
+QToolButton[og="indmenu"]:disabled { color: $border; }
+QMenu { background-color: $card; color: $text; border: 1px solid $border; }
+QMenu::item:selected { background-color: $accent; color: #FFFFFF; }
+QLabel#strat_label { color: $muted; font-size: 12px; background: transparent; }
+QComboBox#strat_combo { background-color: $card; color: $text; border: 1px solid $border;
+    border-radius: 4px; padding: 3px 6px; font-size: 12px; min-width: 130px; }
 """
 
 

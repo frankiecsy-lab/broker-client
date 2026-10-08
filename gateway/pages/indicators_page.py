@@ -24,7 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from PySide6.QtCore import Qt, QAbstractTableModel  # noqa: E402
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox,  # noqa: E402
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,  # noqa: E402
                                QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
                                QPushButton, QSpinBox, QTableView, QVBoxLayout, QWidget)
 
@@ -234,7 +234,10 @@ class IndicatorsPage(QWidget):
             lbl.setObjectName(f'ind_paramlbl_{p.key}')
             lbl.setProperty('og', 'indparamlbl')
             self.param_row.addWidget(lbl)
-            if p.is_int:
+            if p.is_bool:   # #28：開關型參數（MA 逐條線顯示）→ CHECKBOX
+                sp = QCheckBox()
+                sp.setChecked(bool(int(p.default)))
+            elif p.is_int:
                 sp = QSpinBox()
                 sp.setRange(int(p.lo), int(p.hi))
                 sp.setValue(int(p.default))
@@ -280,8 +283,12 @@ class IndicatorsPage(QWidget):
             lbl.setText('· %s：%s' % (t(p.label_key, lang), t(p.note_key, lang)))
             self._detail_notes[p.key] = lbl
 
+    @staticmethod
+    def _widget_val(sp):   # #28：spin → value()；checkbox（is_bool）→ 0/1
+        return int(sp.isChecked()) if isinstance(sp, QCheckBox) else sp.value()
+
     def _editor_params(self):
-        return {k: sp.value() for k, sp in self._param_spins.items()}
+        return {k: self._widget_val(sp) for k, sp in self._param_spins.items()}
 
     def _fill_editor(self, e):
         """編輯模式：表格所選行填入頂欄。"""
@@ -293,7 +300,10 @@ class IndicatorsPage(QWidget):
         pi = self.pos_combo.findData(e['position'])
         self.pos_combo.setCurrentIndex(pi if pi >= 0 else 0)
         for k, sp in self._param_spins.items():
-            sp.setValue(e['params'].get(k, sp.value()))
+            if isinstance(sp, QCheckBox):   # #28
+                sp.setChecked(bool(int(e['params'].get(k, 1))))
+            else:
+                sp.setValue(e['params'].get(k, sp.value()))
 
     def _on_sel_changed(self, *_):
         rows = self.table.selectionModel().selectedRows()
