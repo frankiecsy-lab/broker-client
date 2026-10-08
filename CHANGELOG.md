@@ -6,6 +6,12 @@
 
 ## 2026-10-08
 
+### FIX：FVG 區塊重寫 — 近邊填平 + 同向取代（唔准斷續、唔准拖太長）
+檔案：`gateway/indicators.py`、`gateway/i18n.py`、`.scratch/test_ict_suite.py`
+- **要求**（用戶，兩輪）：「FVG 有斷續」→「不應讓間斷也不應該那麼長」。真數據（HSI 1M）診斷：① 同向區塊重疊落 `_zones_to_arrays` 被「較新者覆蓋」逐 bar 切走 → 一個區塊砌成幾截；② 填平條件係「完全填平」（low ≤ 區塊底 / high ≥ 區塊頂），單邊行情下區塊一直畫到最後一根（實測 26-28 根）。
+- **修法**（對齊 OB 家族已確立嘅語義）：① **近邊填平** — 價格返身入缺口即結束（睇多 `low < 區塊頂` / 睇空 `high > 區塊底`），掃描一律由確認根（i+2）開始，三根形態本身唔算填平；② **同向取代** — `_supersede`：較新同向 FVG 出現即終止舊者 → 同向必然唔重疊 → 每個區塊完整一個方塊。i18n `ind_use_fvg` 文案同步。
+- **驗證**：`test_ict_suite` [FV] 改近邊語義 + 新增 [FVS]（兩個同向缺口 → 兩截完整無斷續）；真數據 dump：所有區塊 1-5 根、零切割（舊版：5 截碎片 + 26 根長條）；`e2e_gui_indicators` 全通過（Part 9 斷言在新語義下陣列值不變）。
+
 ### MINOR：K 線圖平移順暢度 — 拖動凍結 Y 尺度 + 逐幀平滑平移
 檔案：`gateway/pages/gui_kline.py`、`.scratch/e2e_gui_indicators.py`、`.scratch/bench_kline_pan.py`
 - **要求**（用戶）：「縮放是流暢了，平移還是不順。」

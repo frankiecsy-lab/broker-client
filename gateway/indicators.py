@@ -113,8 +113,8 @@ def _supersede(zones):
 def _zones_to_arrays(n, zones):
     """zones = [(start, end, lo, hi, d)]（含 end，d=+1 睇多 / −1 睇空）→ 4 條全長度陣列。
     重疊區塊：後面（較新）嘅覆蓋前面 — 視覺上新區塊優先可見。
-    🤖 OB 家族預設經 `_supersede` → 同向必然唔重疊，呢度唔會切短任何嘢；
-       只有 `supersede=0`（或 FVG/BPR 呢類本身可以重疊嘅區塊）先會行到覆蓋呢條路。"""
+    🤖 OB 家族同 FVG 預設經 `_supersede` → 同向必然唔重疊，呢度唔會切短任何嘢；
+       只有 `supersede=0`（或 BPR 呢類本身可以重疊嘅區塊）先會行到覆蓋呢條路。"""
     bt = np.full(n, np.nan)
     bb = np.full(n, np.nan)
     st = np.full(n, np.nan)
@@ -143,7 +143,9 @@ def _fvg_candidates(h, l, atr, min_size):
 
 def compute_fvg(ohlc, params):
     """FVG（三根缺口）：睇多 = low[i+2] > high[i] → 區塊 [high[i], low[i+2]]；睇空 = high[i+2] < low[i] → [high[i+2], low[i]]。
-    區塊由確認根（i+2）畫到第一次被填平（睇多：low ≤ 區塊底；睇空：high ≥ 區塊頂），之後 NaN。
+    區塊由缺口首根畫到價格**返身入缺口**（近邊被觸及：睇多 low < 區塊頂 / 睇空 high > 區塊底），之後 NaN。
+    🤖 同向較新嘅缺口出現即終止舊區塊（`_supersede`，同 OB 家族一樣）：FVG 係可以重疊嘅區塊，
+       但重疊落陣列會被「較新者覆蓋」逐 bar 切走 → 一個區塊砌成幾截「斷續」（用戶反映）。
     參數：period = 計 ATR 嘅週期（只俾 min_size 做尺）；min_size = 缺口最少幾多倍 ATR（0 = 全收）；max_zones = 只畫最近 N 個。"""
     h, l = ohlc['h'], ohlc['l']
     period = int(params['period'])
@@ -154,13 +156,15 @@ def compute_fvg(ohlc, params):
 
     zones = []
     for start, lo, hi, d in _fvg_candidates(h, l, atr, min_size)[-max_zones:]:
+        # 🤖 填平 = 價格返身入缺口（近邊），唔使完全穿過；掃描一律由確認根（i+2）先開始 —
+        #    三根形態本身（尤其中間根）必然插喺缺口內，唔算填平。
         end = n - 1
-        for j in range(start, n):
-            if (d > 0 and l[j] <= lo) or (d < 0 and h[j] >= hi):
+        for j in range(start + (2 if d < 0 else 0), n):
+            if (d > 0 and l[j] < hi) or (d < 0 and h[j] > lo):
                 end = j
                 break
         zones.append((start, end, lo, hi, d))
-    return _zones_to_arrays(n, zones)
+    return _zones_to_arrays(n, _supersede(zones))
 
 
 def _has_fvg(h, l, i, j1, d):

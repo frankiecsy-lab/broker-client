@@ -19,7 +19,7 @@ from gateway.i18n import LANGS, t  # noqa: E402
 from gateway.indicators import (  # noqa: E402
     FAR_OVERLAYS, FIT_PAD, INDICATOR_DEFS, _fit_vals, _fvg_candidates, _ob_candidates, _ob_zones,
     _swings, _structure_breaks, _supersede, _zones_to_arrays,
-    compute_atr, compute_bos, compute_bpr, compute_choch, compute_eqhl,
+    compute_atr, compute_bos, compute_bpr, compute_choch, compute_eqhl, compute_fvg,
     compute_liq, compute_ote, compute_pd, compute_breaker, compute_ob, compute_vob,
 )
 
@@ -224,6 +224,49 @@ check('帶畫到價格完全穿過任一邊（j=9 收盤 ≥ 10.5 = 最後一根
       np.isfinite(zr['bear_top'][9]) and np.isnan(zr['bear_top'][10]))
 check('min_size 好大 → 細缺口全過濾 → 冇 BPR',
       all(np.isnan(compute_bpr(G, {'period': 2, 'min_size': 99.0, 'max_zones': 10})['bear_top'])))
+
+# ══════════ Fixture FV：FVG 近邊填平（🤖 價格返身入缺口即填平；掃描由確認根開始，三根形態本身唔算）══════════
+FV = bars([
+    (9.8, 10.0, 9.5, 9.9), (9.4, 9.45, 9.2, 9.3), (9.1, 9.1, 8.8, 8.9),
+    (8.9, 9.2, 8.7, 9.1), (9.1, 9.3, 9.0, 9.2), (9.2, 9.4, 9.1, 9.3),
+    (9.3, 9.45, 9.2, 9.4), (9.4, 9.6, 9.35, 9.55), (9.5, 9.45, 9.3, 9.4),
+])
+print('\n[FV] FVG：近邊填平 — 價格返身入缺口即結束，起點/確認根唔會自填')
+fva = compute_atr(FV, {'period': 2})
+check('FV 有睇空缺口（start 0，區間 [9.1, 9.5]）做素材',
+      (0, 9.1, 9.5, -1) in _fvg_candidates(FV['h'], FV['l'], fva['atr'], 0.0))
+zf = compute_fvg(FV, {'period': 2, 'min_size': 0.0, 'max_zones': 15})
+check('起點根（0，high 10.0）同確認根（2，high = 缺口底 9.1）都唔算自填',
+      np.isfinite(zf['bear_top'][0]) and np.isfinite(zf['bear_top'][2]))
+check('價格返身入缺口（j=3 high 9.2 > 缺口底 9.1）即填平，j=4 起 NaN（唔再拖到完全填平先死）',
+      idxs(zf['bear_top']) == [0, 1, 2, 3] and flat(zf['bear_top'], range(4), 9.5)
+      and flat(zf['bear_bottom'], range(4), 9.1))
+
+# 睇多方向對照：同一近邊語義（low < 缺口頂即填平）
+FVU = bars([
+    (10.0, 10.2, 9.8, 10.1), (10.4, 10.6, 10.3, 10.5), (10.7, 10.9, 10.6, 10.8),
+    (10.7, 10.8, 10.5, 10.6), (10.5, 10.6, 10.1, 10.2), (10.0, 10.1, 9.9, 10.0),
+])
+zu = compute_fvg(FVU, {'period': 2, 'min_size': 0.0, 'max_zones': 15})
+check('睇多 FVG：由確認根（2）畫到 low < 缺口頂（j=3：10.5 < 10.6）為止',
+      idxs(zu['bull_top']) == [2, 3] and flat(zu['bull_top'], [2, 3], 10.6)
+      and flat(zu['bull_bottom'], [2, 3], 10.2))
+
+# ══════════ Fixture FVS：同向兩個 FVG — 較新者終止舊者（🤖 用戶：「不應讓間斷」→ 唔准重疊切割）══════════
+FVS = bars([
+    (9.8, 10.0, 9.5, 9.9), (9.4, 9.45, 9.0, 9.3), (9.1, 9.1, 8.8, 8.9),
+    (8.9, 9.05, 8.7, 8.8), (8.8, 8.9, 8.6, 8.7), (8.7, 8.75, 8.5, 8.6),
+    (8.4, 8.4, 8.2, 8.3), (8.3, 8.5, 8.1, 8.2),
+])
+zs = compute_fvg(FVS, {'period': 2, 'min_size': 0.0, 'max_zones': 15})
+print('\n[FVS] FVG：同向較新者終止舊者 → 每個區塊完整一個方塊')
+check('FVS 得返兩個睇空缺口做素材：A [9.1,9.5]（start 0）同 B [8.4,8.6]（start 4）',
+      {(0, 9.1, 9.5, -1), (4, 8.4, 8.6, -1)}
+      == set(_fvg_candidates(FVS['h'], FVS['l'], compute_atr(FVS, {'period': 2})['atr'], 0.0)))
+check('A 冇被自己填平（0..3 high 全部 ≤ 9.1）但俾 B 終止；B 近邊填平喺 7 → 兩截完整、無斷續',
+      idxs(zs['bear_top']) == list(range(8))
+      and all(approx(zs['bear_top'][i], 9.5) and approx(zs['bear_bottom'][i], 9.1) for i in range(4))
+      and all(approx(zs['bear_top'][i], 8.6) and approx(zs['bear_bottom'][i], 8.4) for i in range(4, 8)))
 
 # ══════════ Fixture H：OB 家族新參數 max_size（位移燭唔算 OB）/ pen（被消耗幾深即失效）══════════
 # OB = j=2 陰燭 [99.4, 100.0]（H=0.6），j=3 收盤突破。之後收盤依次 99.8（j=7，但影線低 99.3 已插穿區塊）
