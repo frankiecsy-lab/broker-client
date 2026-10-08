@@ -6,6 +6,15 @@
 
 ## 2026-10-09
 
+### MINOR：i18n 文案全部移出代碼 → `gateway/i18n_strings.json` / `gui_kline_strings.json`
+檔案：`gateway/i18n_strings.json`（新，367 鍵）、`gateway/pages/gui_kline_strings.json`（新，24 鍵）、`gateway/i18n.py`（699 行 → 39 行）、`gateway/pages/gui_kline.py`、`.scratch/t_i18n_json.py`（一次性遷移腳本 `gen_i18n_json.py` 與 `i18n_snapshot.json` 驗證後已按 Auto-Purge 刪走）
+- **動機**：三語表（367 鍵 × 3）同 K 線測試頁兩語表（24 鍵）原本硬編碼喺 `i18n.py` / `gui_kline.py` 嘅 dict 入面 → 改一句文案要喺幾千行代碼搵位、仲要郁 code 檔。文案本質係**資料**，唔係邏輯。
+- **做法**：一次性腳本 `gen_i18n_json.py` 將兩份表原樣 dump 出 JSON（key 順序照功能頁面分組，唔重新排序 → diff 可對照），代碼檔淨低 `json.loads(pathlib.Path(__file__).with_name(...))` + 取字。**`t()` 契約零改**：三語 `t(key, lang)` 同兩語 `t(lang, key, **kw)`（含 `{kw}` 狀態模板 format）簽名、行為、fail-fast（未知 key 即刻 `KeyError`）全部照舊 → 所有 call site 零改動。
+- **新增守門（外部資料必須核對）**：JSON 變咗外部檔案，缺語言唔再係 `SyntaxError` 而係「上咗 UI 先發現某頁冇譯文」→ 載入時一次過核對三語齊全，缺就 `ValueError` 並**列明邊啲 key**；兩份 JSON 都唔准有多餘語言欄。
+- **邊啲唔入 JSON**：語言自稱 endonym（`lang_labels` / `lang_short`，「繁體中文 / EN」唔跟 UI 語言變）照樣入 JSON 但**語義上唔翻譯**；每頁 `_TEXT`（objectName → key 嘅映射）屬排版契約，留喺 code（見 `ui-separation-required`）。
+- ⚠️ **零改動證明（遷移一次性，已 Auto-Purge）**：dump 前先 snapshot 兩份表，逐 key 逐語言對比 → 三語 367 鍵 + 兩語 24 鍵**逐字相同**、key 集合一致、無多餘語言欄（唔係「睇落一樣」）。驗證過後 snapshot 同一次性 generator 已刪走，避免日後正常改文案時測試假失敗。
+- **驗證**：`.scratch/t_i18n_json.py`（長期回歸）→ 「所有功能測試成功 ✅ (13 項)」：① 代碼冇殘留文案表（`STRINGS = {` / `_s(` 已消失）、兩份 JSON 喺位可 parse、路徑一律 `pathlib.with_name()`（冇 hardcode 斜線）② 兩份表結構齊全（367 鍵三語 / 24 鍵兩語，冇多餘語言欄；代碼入面嘅表 == JSON）③ 取字行為唔變（三語取字 / 未知 key 炸 / 兩語模板 format / theme helper 經 JSON）④ 故意刪走 `nav_quotes` 嘅 zh_cn+en → 子進程 `import i18n` 即刻 `ValueError` 並列明 key ✅。全量回歸 21 支測試（5 支單元 + `t_ui_infra` / `t_p1` / `t_p2` / `t_p3` + 11 支 GUI E2E）**全部 exit 0 全綠**。
+
 ### MINOR：K 線 stream 基建抽成 `gateway/kline_stream.py`（`LoopThreadBase` + `ClientHolderMixin`，兩頁變 subclass）
 檔案：`gateway/kline_stream.py`（新）、`gateway/pages/gui_kline.py`、`gateway/pages/quotes_page.py`、`.scratch/t_p2_cache_switch.py`
 - **動機**：用戶第 ③ 項「模組化共用」真正重覆咗兩份嘅唔係繪畫（已經只有一套 `KlineChart`），而係 **thread/worker 樣板** — `gui_kline.Worker`+`LoopThread` 同 `quotes_page.GridWorker`+`_LoopThread` 逐字寫多一次 loop 生命週期同 client holder。

@@ -16,9 +16,11 @@ stream_kline 係持續串流：第一次 yield 係歷史底表（baseline），�
 都即時拼接並刷新圖 + 表，顯示實時 K 綫；UI 更新節流到 ~4Hz。
 """
 import asyncio
+import json
 import logging
 import math
 import os
+import pathlib
 import sys
 import time
 from datetime import datetime
@@ -81,47 +83,16 @@ QHeaderView::section {{
 """
 
 
-# 🤖 P8 i18n：繁中/英文切換 — 所有 UI label / status template 都經 t()（key → (zh, en)）。
-#    語言名本身（"繁中"/"EN"）唔翻譯 — 用戶揀嘅就係佢自己嘅語言。
-STRINGS = {
-    'title':          ("stream_kline 測試 — 持續實時 K 綫串流", "stream_kline test - live K-line streaming"),
-    'lbl_symbol':     ("標的代碼", "Symbol"),
-    'lbl_interval':   ("K綫週期", "Interval"),
-    'lbl_bars':       ("KLINE數量", "Bars"),
-    'lbl_broker':     ("券商", "Broker"),
-    'btn_start':      ("▶ 開始串流", "Start stream"),
-    'btn_stop':       ("⏹ 停止串流", "Stop stream"),
-    'panel_btn':      ("DF 結果", "Data frame"),
-    'rows_info':      ("共 {total} 行 · ⏪ 最新在上", "{total} rows - newest on top"),
-    'rows_trunc':     ("（顯示最後 {n} 行）", "(showing last {n})"),
-    'ready':          ("就緒 · 默認 {broker} / {code} — 撳 [開始串流] 訂閱實時 K 綫",
-                       "Ready - default {broker} / {code} - press [Start stream] to subscribe"),
-    'index_fresh':    ("就緒 · symbol index {n} 條（{age}h 前更新）· 默認 {broker} / {code}",
-                       "Ready - symbol index {n} entries (updated {age}h ago) - default {broker} / {code}"),
-    'bridge_wait':    ("⏳ 橋接初始化中，請稍候再試", "Bridge initializing, please retry in a moment"),
-    'need_code':      ("❌ 請輸入標的代碼（格式 MARKET.SYMBOL，如 HK.00700）",
-                       "Enter a symbol (format MARKET.SYMBOL, e.g. HK.00700)"),
-    'subscribing':    ("⏳ 訂閱 {code} {ktype} ×{num}（{broker}）…",
-                       "Subscribing {code} {ktype} x{num} ({broker})..."),
-    'baseline_ok':    ("🟢 baseline 已載入 · 共 {n} 根 — 等待實時推送…",
-                       "Baseline loaded - {n} bars, waiting for live ticks..."),
-    'streaming':      ("串流中 · 收到 {ticks} 次推送 · 共 {n} 根 · 最後 bar {last_t}",
-                       "Streaming - {ticks} ticks received - {n} bars - last bar {last_t}"),
-    'stopped':        ("⏹ 已停止 · 共收到 {ticks} 次推送（baseline 外）· 最後 {n} 根",
-                       "Stopped - {ticks} ticks (excl. baseline) - last {n} bars"),
-    'err_suffix':     ("（檢查：代碼格式 · OpenD/IB 連線 · 行情權限）",
-                       "(check: code format, OpenD/IB connection, quote permission)"),
-    'last_push':      ("最後推送 {now} · 最新K線 {bar}", "Last push {now} - latest bar {bar}"),
-    'fetch_start':    ("⏳ FETCH symbol index…", "Fetching symbol index..."),
-    'fetch_progress': ("⏳ FETCH {label}（{n}）…", "FETCH {label} ({n})..."),
-    'fetch_ok':       ("✅ FETCH 完成 · {msg}", "FETCH done - {msg}"),
-    'fetch_fail':     ("❌ FETCH 失敗：{msg}", "FETCH failed: {msg}"),
-}
+# 🤖 P8 i18n：繁中/英文切換 — 所有 UI label / status template 都經 t()。
+#    文案一律喺 `gui_kline_strings.json`（key → {zh, en}），改文案唔使郁代碼；
+#    呢度淨低載入 + 取字。語言名本身（"繁中"/"EN"）唔翻譯 — 用戶揀嘅就係佢自己嘅語言。
+STRINGS = json.loads(pathlib.Path(__file__).with_name('gui_kline_strings.json')
+                     .read_text(encoding='utf-8'))
 
 
 def t(lang, key, **kw):
     """STRINGS[key] → lang 對應 template + format（**kw）。GUI 所有可翻譯文字唯一入口。"""
-    s = STRINGS[key][0] if lang == 'zh' else STRINGS[key][1]
+    s = STRINGS[key]['zh' if lang == 'zh' else 'en']
     return s.format(**kw) if kw else s
 
 
