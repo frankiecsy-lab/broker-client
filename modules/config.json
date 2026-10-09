@@ -3,7 +3,8 @@
     "kline_adj": "none",
     "source": {
         "get_kline": "ib",
-        "stream_kline": "futu"
+        "stream_kline": "futu",
+        "trade": "futu"
     },
     "futu": {
         "host": "127.0.0.1",

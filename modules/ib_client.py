@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)   # 🤖 P5：print → logging（app-level
 
 from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
 from .kline_schema import reorder_kline, validate_kline   # 🤖 P3：K 線 schema 一來源 + 驗證
+from .trade_base import (ACC_COLS, ACCINFO_KEYS, ORDER_COLS, POS_COLS,  # 🤖 #34b：交易能力契約
+                         TradeBase, clamp_side)
 
 # 🤖 P6: IB error code → 人話 hint 映射表。由本 account 實測建立（findings 見 CHANGELOG.md P6 節；probe 腳本已清理），唔係憑記憶寫：
 #    162/200/10314/2174 實測過；366/420 係標準 TWS code（呢個 account 觸發唔到 — 歷史數據權限 OK、stream 靜默無數據唔彈錯）。
@@ -30,8 +32,9 @@ def _ib_error_text(code, msg):
     return f"{hint}（IB Error {code}）" if hint else f"IB Error {code}: {msg}"
 
 
-class IBClient(BrokerBase):
+class IBClient(BrokerBase, TradeBase):
     NAME = "ib"   # 🤖 P1：registry key（同 config.json 嘅 section 名）
+    TRADE = True  # 🤖 #34b：有交易能力（見下方「💳 交易能力」段 + modules/trade_base.py）
 
     def __init__(self,config=None):
         super().__init__(config)   # 🤖 P1：BrokerBase.__init__ 存 self.config（允許唔傳 → {}）
@@ -438,3 +441,176 @@ class IBClient(BrokerBase):
 
     async def get_ticker(self):
         logger.info('Ib get_ticker (來自獨立的 IB 引擎)')
+
+    # ══════════ 💳 交易能力（#34b — 契約見 modules/trade_base.py）══════════
+    # 🤖 全部复用行情嗰條**共享持久連線**（clientId=99）— IB 禁止同一 clientId 開多條，所以交易唔會另開連線。
+    #    即係：量化頁自動落單同 K 線 stream 行同一條 TWS 通道，ib_async 內部自己排程。
+    # ⚠️ IB **冇**「模擬/實盤」開關：係實盤定 paper 完全由你連邊個 TWS/Gateway 決定。帳戶 env 只按 IB
+    #    官方帳戶編號慣例推（DU 前綴 = paper）— 呢個係**編號慣例唔係 API 欄位**，如實標明。
+    # ⚠️ `placeOrder` 回傳 = Trade（status PendingSubmit/Submitted），**唔係成交**。成交要由 open_orders 先睇到。
+
+    # futu 嘅訂單類型名 → IB 名。只有真正等價先映射；其餘原樣交俾 TWS（唔支援就由 TWS 如實拒單）
+    _IB_ORDER_TYPES = {'NORMAL': 'LMT', 'MARKET': 'MKT'}
+    # IB accountValues tag → 契約 ACCINFO_KEYS（冇對應嘅 key 留空，唔編數）
+    _ACCINFO_TAGS = {'total_assets': 'NetLiquidation', 'cash': 'CashBalance',
+                     'market_val': 'GrossPositionValue', 'power': 'BuyingPower',
+                     'available_funds': 'AvailableFunds', 'avl_withdrawal_cash': 'MaxWithdrawalAmount'}
+
+    async def _trd_conn(self):
+        """確保共享連線喺 → (ib, None)；唔到 → (None, 原因原文)。"""
+        try:
+            await self._ensure_connected()
+        except Exception as e:
+            return None, f'IB/TWS 連線開唔到: {e}'
+        if self.ib is None or not self.ib.isConnected():
+            return None, 'IB/TWS 未連線（先 check TWS 或 IB Gateway 開咗無、port 啱唔啱）'
+        return self.ib, None
+
+    @staticmethod
+    def _num(v):
+        """IB 數值欄一律 string → float；唔係數就原樣回（如實，唔扮 0）。"""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return v
+        return int(f) if f == int(f) else f
+
+    async def trade_accounts(self):
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        accts = list(getattr(ib, 'managedAccounts', None) or [])
+        if not accts:
+            return False, None, 'TWS 冇回報 managed account（連線權限不足？）'
+        rows = [{c: {'acc_id': a,
+                     'trd_env': 'SIMULATE' if str(a).upper().startswith('DU') else 'REAL',
+                     'acc_status': 'ACTIVE'}.get(c, '') for c in ACC_COLS}
+                for a in accts]   # 未提供嘅欄（acc_type/trdmarket_auth）留空 — 由契約決定形狀，唔扮齊
+        return True, rows, ''
+
+    async def place_order(self, *, code, side, qty, price=None, account=None,
+                          env=None, order_type=None, tif=None):
+        sd = clamp_side(side)
+        if sd is None:
+            return False, None, f'買賣方向唔識: {side!r}（只收 BUY/SELL）'
+        try:
+            q = int(qty)
+            p = float(price) if price not in (None, '') else None
+        except (TypeError, ValueError):
+            return False, None, f'數量/價格唔係數字: qty={qty!r} price={price!r}'
+        if q <= 0:
+            return False, None, f'數量必須大於 0: {q}'
+        otype = self._IB_ORDER_TYPES.get(str(order_type or 'NORMAL').upper(),
+                                        str(order_type or 'LMT').upper())
+        if otype == 'LMT' and p is None:
+            return False, None, f'{otype} 訂單必須有價格'
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        try:
+            contract = await self._make_contract(code)
+        except Exception as e:
+            return False, None, str(e)
+        o = Order(action=sd, totalQuantity=q, orderType=otype)
+        if p is not None and otype != 'MKT':
+            o.lmtPrice = p
+        if tif:
+            o.tif = str(tif).upper()
+        if account:
+            o.account = str(account)
+        try:
+            trade = ib.placeOrder(contract, o)
+        except Exception as e:
+            return False, None, str(e)
+        status = getattr(trade.orderStatus, 'status', '') or getattr(trade.order, 'status', '')
+        return True, {'order_id': str(o.orderId), 'code': str(code).strip(), 'side': sd,
+                      'qty': q, 'price': p if p is not None else '', 'status': str(status)}, ''
+
+    async def cancel_order(self, *, order_id, account=None, env=None):
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        try:
+            oid = int(order_id)
+        except (TypeError, ValueError):
+            return False, None, f'訂單號唔係整數: {order_id!r}'
+        # IB 嘅 cancelOrder 食 Order object，唔食 order_id → 由本地 openOrders cache 搵返（呢個係 ib_async 正規用法）
+        target = next((t.order for t in ib.openOrders() if t.order.orderId == oid), None)
+        if target is None:
+            return False, None, f'搵唔到訂單 {oid}（已成交/已撤/唔喺呢條連線？）'
+        try:
+            ib.cancelOrder(target)
+        except Exception as e:
+            return False, None, str(e)
+        return True, f'已送出撤單請求 order_id={oid}', ''
+
+    async def open_orders(self, *, account=None, env=None):
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        try:
+            trades = await ib.reqOpenOrdersAsync()
+        except Exception as e:
+            return False, None, str(e)
+        rows = []
+        for t in trades:
+            c, o, s = t.contract, t.order, t.orderStatus
+            if account and str(getattr(o, 'account', '') or c.account or '') not in ('', str(account)):
+                continue   # 多帳戶時如實只留揀咗嗰個
+            raw = {'order_id': str(o.orderId), 'code': c.symbol,
+                   'trd_side': o.action, 'order_type': o.orderType,
+                   'qty': self._num(o.totalQuantity), 'dealt_qty': self._num(s.filled),
+                   'price': self._num(o.lmtPrice or o.auxPrice or ''),
+                   'dealt_avg_price': self._num(s.avgFillPrice),
+                   'order_status': s.status}
+            # create_time/stock_name：IB openOrders 唔帶 → 契約照留欄、值留空（如實，唔編數）
+            rows.append({c2: raw.get(c2, '') for c2 in ORDER_COLS})
+        return True, rows, ''
+
+    async def positions(self, *, account=None, env=None):
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        try:
+            poss = await ib.reqPositionsAsync()
+        except Exception as e:
+            return False, None, str(e)
+        rows = []
+        for p in poss:
+            c = p.contract
+            if account and str(p.account or '') != str(account):
+                continue
+            # ⚠️ IB reqPositions 得 position/avgCost — market_val/pl_val/pl_ratio/can_sell_qty 呢度真係冇，
+            #    契約照留欄、值留空（如實，唔編數）
+            raw = {'code': c.symbol, 'position_market': c.exchange,
+                   'qty': self._num(p.position), 'cost_price': self._num(p.avgCost),
+                   'currency': c.currency}
+            rows.append({c2: raw.get(c2, '') for c2 in POS_COLS})
+        return True, rows, ''
+
+    async def account_info(self, *, account=None, env=None):
+        ib, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        acct = str(account or '')
+        try:
+            await ib.reqAccountUpdatesAsync(acct)   # ib_async 收完第一批會自動 unsubscribe
+            vals = ib.accountValues(acct)
+        except Exception as e:
+            return False, None, str(e)
+        by_tag = {}
+        for v in vals:
+            if v.tag and v.value not in (None, ''):
+                by_tag[v.tag] = v.value   # 最後一次為準（IB 會推多行更新）
+        info = {k: self._num(by_tag.get(tag, '')) for k, tag in self._ACCINFO_TAGS.items()}
+        missing = [k for k, v in info.items() if v == '']   # 如實：少欄要睇到，唔扮齊
+        if missing:
+            logger.warning('IB 交易: accountValues 缺少欄位 %s', missing)
+        return True, info, ''
+
+    async def unlock_status(self, *, account=None, env=None):
+        """IB 冇「解鎖交易」機制 — 連咗 TWS/Gateway 就可以落單。如實回 unlocked=True（唔阻全自動）。"""
+        _, err = await self._trd_conn()
+        if err:
+            return False, None, err
+        return True, {'unlocked': True, 'known': True, 'hint': 'IB 冇解鎖機制 — 直接經 TWS/Gateway 落單'}, ''

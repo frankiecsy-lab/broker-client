@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QMainWindow, QMenu,
                                QPushButton, QWidget)
 
 from gateway.i18n import DEFAULT_LANG, LANGS, LANG_SHORT, t, theme_toggle_text
+from gateway.pages.backtest_page import BacktestPage
 from gateway.pages.connection_page import ConnectionPage
 from gateway.pages.favorites_page import FavoritesPage
 from gateway.pages.home_page import HomePage
@@ -36,6 +37,7 @@ from gateway.pages.fulltest_page import FulltestPage
 from gateway.pages.futu_trade_page import FutuTradePage
 from gateway.pages.indicators_page import IndicatorsPage
 from gateway.pages.kline_page import KlinePage
+from gateway.pages.quant_page import QuantPage
 from gateway.pages.quotes_page import QuotesPage
 from gateway.pages.strategies_page import StrategiesPage
 from gateway.pages.symbol_list_page import SymbolListPage
@@ -45,7 +47,7 @@ from gateway.ui.loader import apply_ui
 
 # ── 頁面 registry：nav 按鈕 + QStackedWidget 全部由呢個 list 生成 ──
 PAGE_KEYS = ('home', 'quotes', 'kline', 'fulltest', 'connection', 'futu_trade',
-             'symbol_list', 'favorites', 'indicators', 'strategies')
+             'symbol_list', 'favorites', 'indicators', 'strategies', 'backtest', 'quant')
 _PAGE_CLASSES = {
     'home': HomePage,
     'quotes': QuotesPage,
@@ -57,9 +59,12 @@ _PAGE_CLASSES = {
     'favorites': FavoritesPage,
     'indicators': IndicatorsPage,
     'strategies': StrategiesPage,
+    'backtest': BacktestPage,
+    'quant': QuantPage,
 }
-# ── nav 分組（用戶要求）：直接按鈕 vs 子選單（收藏 = 功能頁 → 直接按鈕；指標管理 = 用戶指定頂層直按）──
-NAV_DIRECT = ('home', 'quotes', 'futu_trade', 'favorites', 'indicators', 'strategies')
+# ── nav 分組（用戶要求）：直接按鈕 vs 子選單（收藏 = 功能頁 → 直接按鈕；指標管理／回測／量化交易 = 用戶指定頂層直按）──
+NAV_DIRECT = ('home', 'quotes', 'futu_trade', 'favorites', 'indicators', 'strategies', 'backtest',
+              'quant')
 NAV_MENUS = {'test': ('kline', 'fulltest', 'symbol_list'),
              'settings': ('connection',)}
 

@@ -55,6 +55,23 @@ class BrokerClient(ABC):
             raise ValueError(f"❌ 不支援的券商類型 [{source}]，有效：{sorted(BROKERS)}")
         return self._clients[source]
 
+    # ══════════ 💳 交易能力 dispatch（#34b — 契約見 modules/trade_base.py）══════════
+    # 🤖 能力係**問出嚟**嘅，唔係假設：`TRADE` 旗標冇就如實講「呢家券商唔支援交易」，
+    #    絕對唔好靜默 fallback 去另一家（自動落單靜默轉券商 = 用錯帳戶落錯單，係會動真錢嘅錯）。
+    def trade_supported(self, broker=None):
+        """→ (支援與否, 券商名, 原因)。頁要如實顯示邊家可交易，唔使睇 exception。"""
+        client = self._resolve_broker(broker, "trade")
+        if getattr(client, "TRADE", False):
+            return True, client.NAME, ""
+        return False, client.NAME, f"呢家券商唔支援交易：{client.NAME}"
+
+    def _resolve_trade_broker(self, broker):
+        """交易 dispatch 唯一入口 — 唔支援就回 (None, 原因)，支援就回 (client, None)。"""
+        ok, name, why = self.trade_supported(broker)
+        if not ok:
+            return None, why
+        return self._clients[name], None
+
     def _get_config(self, file='config.json'):
         # 🤖 用本檔案所在目錄解析（唔係 CWD）：GUI 可以由任何工作目錄 import
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), file)
@@ -85,6 +102,58 @@ class BrokerClient(ABC):
             # 🤖 各 client 同一個 (status, data, message) 形狀；data = async generator（訂閱已喺 setup 階段完成）
             return await client.stream_kline(code=code, ktype=ktype, kline_num=kline_num)
 
+
+    # ✨ 交易能力一律照 get_kline 一樣嘅 (status, data, message) 形狀；broker 參數 > config.source.trade
+    async def trade_accounts(self, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.trade_accounts()
+
+    async def place_order(self, *, code, side, qty, price=None, account=None,
+                          env=None, order_type=None, tif=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.place_order(code=code, side=side, qty=qty, price=price,
+                                            account=account, env=env, order_type=order_type, tif=tif)
+
+    async def cancel_order(self, *, order_id, account=None, env=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.cancel_order(order_id=order_id, account=account, env=env)
+
+    async def open_orders(self, *, account=None, env=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.open_orders(account=account, env=env)
+
+    async def positions(self, *, account=None, env=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.positions(account=account, env=env)
+
+    async def account_info(self, *, account=None, env=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.account_info(account=account, env=env)
+
+    async def unlock_status(self, *, account=None, env=None, broker=None):
+        client, err = self._resolve_trade_broker(broker)
+        if client is None:
+            return False, None, err
+        async with client:
+            return await client.unlock_status(account=account, env=env)
 
     # 💡 未來如果你要加 get_ticker，就用一樣的直覺邏輯寫：
     async def get_ticker(self):

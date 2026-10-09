@@ -1,0 +1,429 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QuantPage</class>
+ <widget class="QWidget" name="quant_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1240</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 輸入行 1：交易邊界（券商／環境／帳戶／落單模式）。
+        選項內容（券商名單、SIMULATE/REAL、帳戶清單）屬資料 → quant_page.py 按
+        modules.registry.BROKERS + modules.trade_base.TRADE_ENVS + trade_accounts 填。
+        模式開關（用戶：「兩者都要，頁上有開關」）= 兩個互斥可撳按鈕，狀態一眼睇到。 -->
+   <item>
+    <layout class="QHBoxLayout" name="connRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLabel" name="qnt_broker_lbl">
+       <property name="text"><string>券商</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_broker"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_env_lbl">
+       <property name="text"><string>交易環境</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_env"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_account_lbl">
+       <property name="text"><string>帳戶</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_account">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>2</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+     </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_acc_refresh">
+       <property name="text"><string>刷新帳戶</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_mode_lbl">
+       <property name="text"><string>落單模式</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_mode_auto">
+       <property name="checkable"><bool>true</bool></property>
+       <property name="text"><string>全自動</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_mode_semi">
+       <property name="checkable"><bool>true</bool></property>
+       <property name="text"><string>半自動</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 輸入行 2：新增綁定（標的 × 週期 × 策略 × 持倉模式 × 每筆數量）。
+        持倉模式 = position_model.MODES（同回測頁共用一份 enum，label 用 mode_* key）；
+        週期清單 = quotes_page.KTYPES；策略清單 = StrategyManager → 一律 code 填 -->
+   <item>
+    <layout class="QHBoxLayout" name="addRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLineEdit" name="qnt_symbol">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>3</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="placeholderText"><string>標的：HK.00700 / 騰訊 / NVDA</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_ktype_lbl">
+       <property name="text"><string>週期</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_ktype"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_strategy_lbl">
+       <property name="text"><string>策略</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_strategy">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>2</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_mode_pos_lbl">
+       <property name="text"><string>持倉模式</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="qnt_mode"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_qty_lbl">
+       <property name="text"><string>每筆數量</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="qnt_qty"/>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_add_btn">
+       <property name="text"><string>加入綁定</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_remove_btn">
+       <property name="text"><string>移除所選</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="qnt_watch_btn">
+       <property name="checkable"><bool>true</bool></property>
+       <property name="text"><string>開始監控</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="statusRow">
+     <item>
+      <widget class="QLabel" name="qnt_status">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="qnt_hint">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>2</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="wordWrap"><bool>true</bool></property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 主區：左 = 綁定表（即時執行個體），右 = 風控卡（用戶：「最小三項」，全部可調）。
+        兩邊都要睇到先至安全：全自動落單而家受咩限制，一屏過。 -->
+   <item>
+    <layout class="QHBoxLayout" name="mainRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QGroupBox" name="qnt_bind_card">
+       <property name="title"><string>策略綁定</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+         <horstretch>4</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <layout class="QVBoxLayout" name="bindCol">
+        <property name="leftMargin"><number>6</number></property>
+        <property name="topMargin"><number>4</number></property>
+        <property name="rightMargin"><number>6</number></property>
+        <property name="bottomMargin"><number>4</number></property>
+        <property name="spacing"><number>4</number></property>
+        <item>
+         <widget class="QTableView" name="qnt_bind_table"/>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="qnt_risk_card">
+       <property name="title"><string>風控</string></property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <layout class="QGridLayout" name="riskGrid">
+        <property name="leftMargin"><number>6</number></property>
+        <property name="topMargin"><number>4</number></property>
+        <property name="rightMargin"><number>6</number></property>
+        <property name="bottomMargin"><number>4</number></property>
+        <property name="spacing"><number>4</number></property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="qnt_risk_positions_lbl">
+          <property name="text"><string>最大同時持倉數</string></property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QSpinBox" name="qnt_risk_pos"/>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="qnt_risk_trades_lbl">
+          <property name="text"><string>每日最大筆數</string></property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QSpinBox" name="qnt_risk_trades"/>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="qnt_risk_cooldown_lbl">
+          <property name="text"><string>同一標的冷卻（根）</string></property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QSpinBox" name="qnt_risk_cool"/>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="qnt_risk_today_lbl">
+          <property name="text"><string>今日已落筆數</string></property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLabel" name="qnt_today_val">
+          <property name="text"><string>0</string></property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="qnt_risk_open_lbl">
+          <property name="text"><string>目前持倉方向數</string></property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QLabel" name="qnt_open_val">
+          <property name="text"><string>0</string></property>
+         </widget>
+        </item>
+        <item row="5" column="0" colspan="2">
+         <widget class="QLabel" name="qnt_risk_zero_hint">
+          <property name="wordWrap"><bool>true</bool></property>
+          <property name="text"><string/></property>
+         </widget>
+        </item>
+        <item row="6" column="0" colspan="2">
+         <spacer name="riskBottomStretch">
+          <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+          <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 待執行（半自動嘅主戰場，用戶：「人確認先落單」）→ 唔收落 tab，常駐先盡到責任。
+        呢度顯示「會做乜」（開/平/反手 + 會落幾張單），唔係已成交。 -->
+   <item>
+    <widget class="QGroupBox" name="qnt_pending_card">
+     <property name="title"><string>待執行</string></property>
+     <layout class="QVBoxLayout" name="pendingCol">
+      <property name="leftMargin"><number>6</number></property>
+      <property name="topMargin"><number>4</number></property>
+      <property name="rightMargin"><number>6</number></property>
+      <property name="bottomMargin"><number>4</number></property>
+      <property name="spacing"><number>4</number></property>
+      <item>
+       <layout class="QHBoxLayout" name="pendingBtnRow">
+        <property name="spacing"><number>6</number></property>
+        <item>
+         <widget class="QPushButton" name="qnt_confirm_btn">
+          <property name="text"><string>確認落單</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="qnt_reject_btn">
+          <property name="text"><string>拒絕</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="qnt_clear_pending">
+          <property name="text"><string>清空待執行</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="qnt_confirm_hint">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+            <horstretch>0</horstretch><verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="text"><string/></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QTableView" name="qnt_pending_table"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <!-- 持倉／訂單 = 券商帳戶嘅真相（唔係本頁模擬）；事件日誌 = 每次訊號/落單/風控如實記錄。
+        tab 標題屬文案 → quant_page.py 用 setTabText（QTabWidget 嘅 tab 唔係 widget） -->
+   <item>
+    <widget class="QTabWidget" name="qnt_tabs">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>2</verstretch>
+      </sizepolicy>
+     </property>
+     <widget class="QWidget" name="tab_positions">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabPosLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <layout class="QHBoxLayout" name="posBtnRow">
+         <property name="spacing"><number>6</number></property>
+         <item>
+          <widget class="QPushButton" name="qnt_refresh_pos">
+           <property name="text"><string>刷新持倉</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="qnt_pos_note">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+             <horstretch>0</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="text"><string/></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QTableView" name="qnt_pos_table"/>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_orders">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabOrdersLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <layout class="QHBoxLayout" name="orderBtnRow">
+         <property name="spacing"><number>6</number></property>
+         <item>
+          <widget class="QPushButton" name="qnt_refresh_orders">
+           <property name="text"><string>刷新訂單</string></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="qnt_orders_note">
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+             <horstretch>0</horstretch><verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
+           <property name="text"><string/></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QTableView" name="qnt_order_table"/>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_log">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabLogLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <layout class="QHBoxLayout" name="logBtnRow">
+         <property name="spacing"><number>6</number></property>
+         <item>
+          <widget class="QPushButton" name="qnt_log_clear">
+           <property name="text"><string>清空日誌</string></property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QPlainTextEdit" name="qnt_event_log">
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="maximumBlockCount"><number>2000</number></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

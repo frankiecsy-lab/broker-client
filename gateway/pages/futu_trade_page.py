@@ -62,6 +62,9 @@ from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 from gateway.symbol_input import FuzzyCompleter, apply_item, display_name  # noqa: E402 — 全域模糊輸入
 from gateway.ui.bind import apply_text, stamp  # noqa: E402
 from gateway.ui.loader import apply_ui  # noqa: E402
+from modules.trade_base import (  # noqa: E402 — 欄位形狀一來源（#34b，兩家券商、兩頁共用）
+    ACC_COLS, ACCINFO_KEYS, NUMERIC_COLS, ORDER_COLS, POS_COLS,
+)
 
 # config.json 路徑 — pathlib 跨平台（AGENTS.md：禁 hardcode 斜線）
 CONFIG_PATH = Path(__file__).resolve().parents[2] / 'modules' / 'config.json'
@@ -70,19 +73,7 @@ CONFIG_PATH = Path(__file__).resolve().parents[2] / 'modules' / 'config.json'
 # 兼容股票（HK.00700 / US.NVDA）同期貨主連（HK.HSImain）
 _CODE_RE = re.compile(r'^(?:HK|US|SH|SZ)\.[A-Z0-9][A-Z0-9.]*$', re.IGNORECASE)
 
-# ── 表格顯示欄（對住真 OpenD 回傳核實過；card_num/uni_card_num 等敏感欄位刻意唔入表）──
-ACC_COLS = ('acc_id', 'trd_env', 'acc_type', 'trdmarket_auth', 'acc_status')
-ORDER_COLS = ('order_id', 'code', 'stock_name', 'trd_side', 'order_type', 'qty',
-              'dealt_qty', 'price', 'dealt_avg_price', 'order_status', 'create_time')
-POS_COLS = ('code', 'stock_name', 'position_market', 'qty', 'can_sell_qty', 'cost_price',
-            'market_val', 'pl_val', 'pl_ratio', 'currency')
-ACCINFO_KEYS = ('total_assets', 'cash', 'market_val', 'power', 'available_funds',
-                'avl_withdrawal_cash')
-
-# 數值欄 → 表格右對齊（方便比較）；欄名顯示經 i18n col_* keys
-NUMERIC_COLS = frozenset({'qty', 'dealt_qty', 'price', 'dealt_avg_price', 'can_sell_qty',
-                          'cost_price', 'market_val', 'pl_val', 'pl_ratio'})
-
+# 帳戶/訂單/持倉/資金欄位 + 數值欄 = 資料形狀 → 一來源喺 `modules/trade_base`（兩家券商、兩頁共用）
 # 下單表單選項（技術識別碼，三語同字 — 唔入 i18n）
 MARKET_FILTERS = ('All', 'HK', 'US', 'HKFUND', 'USFUND')
 ORDER_TYPES = ('NORMAL', 'MARKET', 'AUCTION_LIMIT', 'LIMIT_IF_TOUCHED')

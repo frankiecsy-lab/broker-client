@@ -38,10 +38,15 @@ Exit code 0 = all pass; non-zero = at least one check failed.
 import json
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import gateway.state_store as state_store  # noqa: E402
+state_store.STATE_PATH = Path(tempfile.mkdtemp(prefix='e2e_futu_trade_')) / 'ui_state.json'  # 🤖 收工 stop 全部頁（有頁會 save state）→ 唔准污染真 ui_state
 
 from PySide6.QtCore import Qt, QMargins  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGridLayout, QMessageBox, QSizePolicy  # noqa: E402
@@ -693,9 +698,8 @@ def main():
     # 全部 thread 停咗之後 sys.exit(code) 就係乾淨 + 可靠（實測穩定）。
     page._worker.stop_and_wait(5000)
     time.sleep(0.5)   # futu SDK close() 之後內部 background thread 仲要 wind down
-    for _key in ('kline', 'fulltest', 'quotes'):   # 長跑 LoopThread 嘅頁（C++ QThread，threading.enumerate 睇唔到；quotes = ticket #09 先有）
-        _p = win.pages.get(_key)
-        if _p is not None and hasattr(_p, '_on_app_quit'):
+    for _p in list(win.pages.values()):   # 唔好 hardcode 頁名：新增頁（backtest/quant…）一律要停，否則又漏 thread
+        if hasattr(_p, '_on_app_quit'):   # 長跑 LoopThread 嘅頁（C++ QThread，threading.enumerate 睇唔到）
             _p._on_app_quit()   # → 原 closeEvent 清理鏈：request_shutdown → thread.wait(3000)（同步，回傳時已停）
     win.close()
     app.processEvents()

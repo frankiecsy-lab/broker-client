@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>BacktestPage</class>
+ <widget class="QWidget" name="backtest_page">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>10</number></property>
+   <property name="topMargin"><number>8</number></property>
+   <property name="rightMargin"><number>10</number></property>
+   <property name="bottomMargin"><number>8</number></property>
+   <property name="spacing"><number>6</number></property>
+   <!-- 輸入行 1：標的 / 策略 / 券商 / 週期 / 根數 / 執行。
+        選項內容（券商名單、11 週期、策略清單）屬資料 → backtest_page.py 按 registry 填 -->
+   <item>
+    <layout class="QHBoxLayout" name="paramRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLabel" name="bt_symbol_lbl">
+       <property name="text"><string>標的</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="bt_symbol">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>3</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="placeholderText"><string>標的：HK.00700 / 騰訊 / NVDA</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_strategy_lbl">
+       <property name="text"><string>策略</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="bt_strategy">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>2</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_broker_lbl">
+       <property name="text"><string>券商</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="bt_broker"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_ktype_lbl">
+       <property name="text"><string>週期</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="bt_ktype"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_bars_lbl">
+       <property name="text"><string>根數</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="bt_bars"/>
+     </item>
+     <item>
+      <widget class="QPushButton" name="bt_run_btn">
+       <property name="text"><string>執行回測</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 輸入行 2：成本／資金／持倉模式（範圍與選項由 gateway/backtest.py + position_model 定，呢度只排版）-->
+   <item>
+    <layout class="QHBoxLayout" name="costRow">
+     <property name="spacing"><number>6</number></property>
+     <item>
+      <widget class="QLabel" name="bt_capital_lbl">
+       <property name="text"><string>名義資金</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDoubleSpinBox" name="bt_capital"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_fee_lbl">
+       <property name="text"><string>手续费%(兩邊)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDoubleSpinBox" name="bt_fee"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_slip_lbl">
+       <property name="text"><string>滑價%(兩邊)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDoubleSpinBox" name="bt_slip"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_rf_lbl">
+       <property name="text"><string>無風險利率%(年)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDoubleSpinBox" name="bt_rf"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_mode_lbl">
+       <property name="text"><string>持倉模式</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="bt_mode"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="bt_note">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="statusRow">
+     <item>
+      <widget class="QLabel" name="bt_status">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <!-- 結果區：指標卡（四組）／交易明細／被忽略訊號／覆核圖 四個 tab。
+        tab 標題屬文案 → backtest_page.py 用 setTabText（QTabWidget 嘅 tab 唔係 widget，apply_text 管唔到）-->
+   <item>
+    <widget class="QTabWidget" name="bt_tabs">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch><verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+     <widget class="QWidget" name="tab_metrics">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabMetricsLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <widget class="QScrollArea" name="bt_cards_area">
+         <property name="widgetResizable"><bool>true</bool></property>
+         <widget class="QWidget" name="bt_cards_host">
+          <property name="geometry">
+           <rect><x>0</x><y>0</y><width>1100</width><height>500</height></rect>
+          </property>
+          <layout class="QVBoxLayout" name="bt_cards_col">
+           <property name="leftMargin"><number>4</number></property>
+           <property name="topMargin"><number>4</number></property>
+           <property name="rightMargin"><number>4</number></property>
+           <property name="bottomMargin"><number>4</number></property>
+           <property name="spacing"><number>6</number></property>
+           <!-- 四組指標卡：卡嘅數量／內容 = METRIC_DEFS（資料）→ backtest_page.py 填進各 grid slot -->
+           <item>
+            <widget class="QGroupBox" name="bt_grp_ret">
+             <property name="title"><string>收益表現</string></property>
+             <layout class="QVBoxLayout" name="bt_grp_ret_col">
+              <property name="leftMargin"><number>6</number></property>
+              <property name="topMargin"><number>4</number></property>
+              <property name="rightMargin"><number>6</number></property>
+              <property name="bottomMargin"><number>4</number></property>
+              <item>
+               <layout class="QGridLayout" name="bt_grid_ret"/>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="bt_grp_risk">
+             <property name="title"><string>風險控制</string></property>
+             <layout class="QVBoxLayout" name="bt_grp_risk_col">
+              <property name="leftMargin"><number>6</number></property>
+              <property name="topMargin"><number>4</number></property>
+              <property name="rightMargin"><number>6</number></property>
+              <property name="bottomMargin"><number>4</number></property>
+              <item>
+               <layout class="QGridLayout" name="bt_grid_risk"/>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="bt_grp_adj">
+             <property name="title"><string>綜合風險回報</string></property>
+             <layout class="QVBoxLayout" name="bt_grp_adj_col">
+              <property name="leftMargin"><number>6</number></property>
+              <property name="topMargin"><number>4</number></property>
+              <property name="rightMargin"><number>6</number></property>
+              <property name="bottomMargin"><number>4</number></property>
+              <item>
+               <layout class="QGridLayout" name="bt_grid_adj"/>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="bt_grp_exec">
+             <property name="title"><string>交易執行（持倉處理）</string></property>
+             <layout class="QVBoxLayout" name="bt_grp_exec_col">
+              <property name="leftMargin"><number>6</number></property>
+              <property name="topMargin"><number>4</number></property>
+              <property name="rightMargin"><number>6</number></property>
+              <property name="bottomMargin"><number>4</number></property>
+              <item>
+               <layout class="QGridLayout" name="bt_grid_exec"/>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <spacer name="cardsBottomStretch">
+             <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+             <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+             <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_trades">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabTradesLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <widget class="QTableView" name="bt_trade_table"/>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_ignored">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabIgnoredLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <item>
+        <widget class="QTableView" name="bt_ig_table"/>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_chart">
+      <attribute name="title"><string/></attribute>
+      <layout class="QVBoxLayout" name="tabChartLayout">
+       <property name="leftMargin"><number>4</number></property>
+       <property name="topMargin"><number>4</number></property>
+       <property name="rightMargin"><number>4</number></property>
+       <property name="bottomMargin"><number>4</number></property>
+       <!-- 淨值曲線 + K 圖 B/S 覆核（33c）：控件屬渲染組件 → backtest_page.py 填進呢個 slot。
+            bt_chart_hint = 未執行回測時嘅提示（文案屬 i18n → code 覆寫），有圖時收埋 -->
+       <item>
+        <layout class="QVBoxLayout" name="bt_chartSlot"/>
+       </item>
+       <item>
+        <widget class="QLabel" name="bt_chart_hint">
+         <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+         <property name="text"><string/></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

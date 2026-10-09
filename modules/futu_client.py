@@ -9,6 +9,8 @@ import queue
 
 from .broker_base import BrokerBase   # 🤖 P1：統一契約（NAME / get_kline / stream_kline 形狀）
 from .kline_schema import reorder_kline, validate_kline   # 🤖 P3：K 線 schema 一來源 + 驗證
+from .trade_base import (ACC_COLS, ACCINFO_KEYS, ORDER_COLS, POS_COLS,  # 🤖 #34b：交易能力契約
+                         TradeBase, clamp_env, clamp_side)
 
 SysConfig.enable_console_log(False)
 logging.getLogger('futu').setLevel(logging.ERROR)
@@ -46,8 +48,9 @@ class KlineRouter(CurKlineHandlerBase):
         return ret_code, content
 
 
-class FutuClient(BrokerBase):
+class FutuClient(BrokerBase, TradeBase):
     NAME = "futu"   # 🤖 P1：registry key（同 config.json 嘅 section 名）
+    TRADE = True    # 🤖 #34b：有交易能力（見下方「💳 交易能力」段 + modules/trade_base.py）
 
     def __init__(self,config=None):
         super().__init__(config)   # 🤖 P1：BrokerBase.__init__ 存 self.config（允許唔傳 → {}）
@@ -63,6 +66,10 @@ class FutuClient(BrokerBase):
         self._shared_dead = False
         self._subs = {}
         self._queues = {}
+        # 💳 交易 ctx（#34b）：同行情 ctx **分開**一條（OpenD 支援並發；交易同行情係兩套 API）。
+        #    lazy 開、全程序共用一條；`asyncio.Lock` 只為防兩條 coroutine 同時開（SDK 調用照樣 to_thread）
+        self._trd_ctx = None
+        self._trd_lock = asyncio.Lock()
 
     async def __aenter__(self):
         return self
@@ -163,6 +170,7 @@ class FutuClient(BrokerBase):
         with self._lock:
             self._drop_shared()
             self._shared_dead = False
+        await self._drop_trd_ctx()   # 🤖 #34b：交易 ctx 一齊收（同一個清理點，唔另設開關）
 
     def _normalize_kline(self,data,ktype):
         # B4 fix: 先 copy 再改，唔會 mutate caller 傳入嘅 df
@@ -357,3 +365,184 @@ class FutuClient(BrokerBase):
 
     async def get_ticker(self):
         logger.info('Futu get_ticker (來自獨立的 Futu 引擎)')
+
+    # ══════════ 💳 交易能力（#34b — 契約見 modules/trade_base.py）══════════
+    # ⚠️ 同行情段一樣：所有 SDK 調用一律 `asyncio.to_thread`（gRPC blocking，唔准 block event loop）。
+    # ⚠️ 交易 ctx 同行情 ctx **分開**兩條（OpenD 支援並發，兩套 API 互不阻塞）。呢條俾「策略自動落單」用；
+    #    `futu_trade_page` 嘅 `_FutuTradeWorker` 自己仲有一條俾「人落單」用 — 兩條并存係 OpenD 允許嘅。
+    # ⚠️ 落單成功 = 已送出俾 OpenD，**唔係已成交**（回執只有 order_id）→ 呼叫方必須如實講。
+
+    def _open_trd_ctx(self):
+        from futu import OpenSecTradeContext   # lazy — import 要幾秒
+        return OpenSecTradeContext(host=self.host, port=self.port)
+
+    async def _ensure_trd_ctx(self):
+        """lazy 開一條共享交易 ctx → (ctx, None)；開唔到 → (None, 原因原文)。
+           ⚠️ 開 ctx 本身都係 blocking（OpenD handshake）→ 一併 to_thread，唔准喺 event loop 上做。"""
+        if self._trd_ctx is not None:
+            return self._trd_ctx, None
+        async with self._trd_lock:
+            if self._trd_ctx is None:
+                try:
+                    self._trd_ctx = await asyncio.to_thread(self._open_trd_ctx)
+                    logger.info('FUTU 交易: 開咗共享 OpenSecTradeContext %s:%s', self.host, self.port)
+                except Exception as e:
+                    return None, f'OpenD 交易連線開唔到: {e}'
+            return self._trd_ctx, None
+
+    async def _drop_trd_ctx(self):
+        """收返交易 ctx（失敗/斷開後重試就係靠呢度清掉，下一手重新 handshake）。"""
+        ctx, self._trd_ctx = self._trd_ctx, None
+        if ctx is not None:
+            try:
+                await asyncio.to_thread(ctx.close)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_unlock_error(msg):
+        """OpenD 錯誤字串屬「交易未解鎖」類？新版 OpenD 只容許喺 GUI 手動解鎖 → 呢個係唯一信號。"""
+        s = str(msg).lower()
+        return '解锁' in s or '解鎖' in s or 'unlock' in s
+
+    @staticmethod
+    def _acc_id(account):
+        """futu 每個交易 API 都要 acc_id（int）。冇傳就如實報 — 亂揀一個帳戶落單係會動真錢嘅事。"""
+        try:
+            return int(account), None
+        except (TypeError, ValueError):
+            return None, '未指定交易帳戶（acc_id）— 先喺頁揀帳戶'
+
+    @staticmethod
+    def _rows(df, cols):
+        """DataFrame → list[dict]（只取 cols 之中實際存在嘅欄；券商少俾欄唔會炸，如實少欄）。"""
+        if not hasattr(df, 'to_dict'):
+            return []
+        return [{c: r[c] for c in cols if c in r} for r in df.to_dict(orient='records')]
+
+    async def trade_accounts(self):
+        from futu import RET_OK
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, accs = await asyncio.to_thread(ctx.get_acc_list)
+        if ret != RET_OK:
+            await self._drop_trd_ctx()   # 攞唔到帳戶通常係 ctx 已死 → 清咗等下一手重連（同交易頁一樣自愈）
+            return False, None, str(accs)
+        return True, self._rows(accs, ACC_COLS), ''
+
+    async def place_order(self, *, code, side, qty, price=None, account=None,
+                          env=None, order_type=None, tif=None):
+        from futu import OrderType, RET_OK, TimeInForce, TrdSide
+        sd = clamp_side(side)
+        if sd is None:
+            return False, None, f'買賣方向唔識: {side!r}（只收 BUY/SELL）'
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        try:
+            q = int(qty)
+            p = float(price) if price not in (None, '') else 0.0
+        except (TypeError, ValueError):
+            return False, None, f'數量/價格唔係數字: qty={qty!r} price={price!r}'
+        if q <= 0:
+            return False, None, f'數量必須大於 0: {q}'
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, data = await asyncio.to_thread(
+            ctx.place_order, price=p, qty=q, code=str(code).strip(),
+            trd_side=TrdSide.BUY if sd == 'BUY' else TrdSide.SELL,
+            order_type=getattr(OrderType, str(order_type or 'NORMAL').upper(), None),
+            trd_env=clamp_env(env), acc_id=acc,
+            time_in_force=getattr(TimeInForce, str(tif or 'DAY').upper(), None))
+        if ret != RET_OK:
+            return False, None, str(data)
+        oid = data['order_id'].iloc[0] if hasattr(data, 'columns') and not data.empty else ''
+        # status 空字串 = OpenD 落單回執唔帶狀態 → 成交與否要由 open_orders 先睇到（契約已寫明）
+        return True, {'order_id': str(oid), 'code': str(code).strip(), 'side': sd,
+                      'qty': q, 'price': p, 'status': ''}, ''
+
+    async def cancel_order(self, *, order_id, account=None, env=None):
+        from futu import ModifyOrderOp, RET_OK
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        try:
+            oid = int(order_id)
+        except (TypeError, ValueError):
+            return False, None, f'訂單號唔係整數: {order_id!r}'
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, msg = await asyncio.to_thread(
+            ctx.modify_order, ModifyOrderOp.CANCEL, oid,
+            qty=0, price=0, trd_env=clamp_env(env), acc_id=acc)
+        if ret != RET_OK:
+            return False, None, str(msg)
+        return True, str(msg), ''
+
+    async def open_orders(self, *, account=None, env=None):
+        from futu import RET_OK
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, df = await asyncio.to_thread(ctx.order_list_query, trd_env=clamp_env(env), acc_id=acc)
+        if ret != RET_OK:
+            return False, None, str(df)
+        return True, self._rows(df, ORDER_COLS), ''
+
+    async def positions(self, *, account=None, env=None):
+        from futu import RET_OK
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, df = await asyncio.to_thread(ctx.position_list_query, trd_env=clamp_env(env), acc_id=acc)
+        if ret != RET_OK:
+            return False, None, str(df)
+        return True, self._rows(df, POS_COLS), ''
+
+    async def account_info(self, *, account=None, env=None):
+        from futu import RET_OK
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, df = await asyncio.to_thread(ctx.accinfo_query, trd_env=clamp_env(env), acc_id=acc)
+        if ret != RET_OK:
+            return False, None, str(df)
+        recs = df.to_dict(orient='records') if hasattr(df, 'to_dict') else []
+        info = recs[0] if recs else {}
+        missing = [k for k in ACCINFO_KEYS if k not in info]   # 如實：少欄要睇到，唔扮齊
+        if missing:
+            logger.warning('FUTU 交易: accinfo 缺少欄位 %s', missing)
+        return True, info, ''
+
+    async def unlock_status(self, *, account=None, env=None):
+        """解鎖狀態探測 — 撤一個唔存在嘅 order_id（無副作用）。真 OpenD 實測：未解鎖 → unlock 錯誤
+           優先於「訂單不存在」；已解鎖 → 訂單不存在類錯誤。其他錯誤 → known=False（如實未知）。"""
+        from futu import ModifyOrderOp, RET_OK
+        acc, err = self._acc_id(account)
+        if err:
+            return False, None, err
+        ctx, err = await self._ensure_trd_ctx()
+        if err:
+            return False, None, err
+        ret, msg = await asyncio.to_thread(
+            ctx.modify_order, ModifyOrderOp.CANCEL, 999999999,
+            qty=0, price=0, trd_env=clamp_env(env), acc_id=acc)
+        if self._is_unlock_error(msg):
+            return True, {'unlocked': False, 'known': True, 'hint': '去 OpenD GUI 手動「解鎖交易」'}, ''
+        low = str(msg).lower()
+        if ret == RET_OK or '不存在' in str(msg) or 'not exist' in low or 'not found' in low \
+                or 'invalid' in low or 'order' in low:
+            return True, {'unlocked': True, 'known': True, 'hint': ''}, ''
+        return True, {'unlocked': False, 'known': False, 'hint': str(msg)}, ''
