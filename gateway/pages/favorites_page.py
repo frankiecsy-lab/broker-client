@@ -47,8 +47,10 @@ HEAD_KEYS = {'code': 'sl_head_code', 'name': 'sl_head_name', 'market': 'sl_head_
 _CODE_LIKE = re.compile(r'^(HK|US)\.[A-Z0-9]+$', re.I)   # prefix 兜底准入格式
 
 # `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
-_STAMP = {'fav_add_btn': {'og': 'favbtn'}, 'fav_remove_btn': {'og': 'favbtn'}}
-_TEXT = {'fav_add_btn': 'fav_add', 'fav_remove_btn': 'fav_remove'}
+_STAMP = {'fav_add_btn': {'og': 'favbtn'}, 'fav_remove_btn': {'og': 'favbtn'},
+          'fav_page_note': {'role': 'pagebody'}}
+_TEXT = {'fav_add_btn': 'fav_add', 'fav_remove_btn': 'fav_remove',
+         'fav_page_note': 'fav_page_note'}
 _PH = {'fav_add_edit': 'fav_add_ph'}
 
 

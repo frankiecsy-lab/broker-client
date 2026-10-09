@@ -45,6 +45,7 @@ from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import (QAbstractItemView, QApplication,  # noqa: E402
                                QHeaderView, QSpinBox, QWidget)
 
+import gateway.accounts as acc  # noqa: E402 — 帳戶規則與顯示名單一來源（三頁共用）
 import gateway.quant_exec as qe  # noqa: E402 — 即時執行口徑單一來源（同回測共用 position_model/strategies）
 import gateway.strategies as strategies  # noqa: E402
 import gateway.theme as theme_mod  # noqa: E402
@@ -118,9 +119,12 @@ _STAMP = {
     'qnt_risk_positions_lbl': {'og': 'qtlbl'}, 'qnt_risk_trades_lbl': {'og': 'qtlbl'},
     'qnt_risk_cooldown_lbl': {'og': 'qtlbl'}, 'qnt_risk_today_lbl': {'og': 'qtlbl'},
     'qnt_risk_open_lbl': {'og': 'qtlbl'},
-    'qnt_hint': {'og': 'qtnote'}, 'qnt_risk_zero_hint': {'og': 'qtnote'},
-    'qnt_confirm_hint': {'og': 'qtnote'}, 'qnt_pos_note': {'og': 'qtnote'},
-    'qnt_orders_note': {'og': 'qtnote'},
+    'qnt_page_note': {'role': 'pagebody'},
+    'qnt_hint': {'role': 'usagehint'}, 'qnt_risk_zero_hint': {'role': 'usagehint'},
+    'qnt_confirm_hint': {'role': 'usagehint'}, 'qnt_pos_note': {'role': 'usagehint'},
+    'qnt_orders_note': {'role': 'usagehint'},
+    'qnt_bind_note': {'role': 'usagehint'}, 'qnt_pending_note': {'role': 'usagehint'},
+    'qnt_log_note': {'role': 'usagehint'},
     'qnt_status': {'og': 'qtstatus'},
     'qnt_today_val': {'og': 'qtval'}, 'qnt_open_val': {'og': 'qtval'},
     'qnt_add_btn': {'og': 'qtprimary'}, 'qnt_confirm_btn': {'og': 'qtprimary'},
@@ -145,7 +149,9 @@ _TEXT = {'qnt_broker_lbl': 'qt_broker_lbl', 'qnt_env_lbl': 'qt_env_lbl',
          'qnt_risk_open_lbl': 'qt_risk_open', 'qnt_risk_zero_hint': 'qt_risk_zero_hint',
          'qnt_confirm_hint': 'qt_confirm_hint',
          'qnt_pos_note': 'qt_pos_note', 'qnt_orders_note': 'qt_pos_note',
-         'qnt_hint': 'qt_hint'}
+         'qnt_hint': 'qt_hint',
+         'qnt_page_note': 'qt_page_note', 'qnt_bind_note': 'qt_bind_note',
+         'qnt_pending_note': 'qt_pending_note', 'qnt_log_note': 'qt_log_note'}
 _PH = {'qnt_symbol': 'qt_symbol_ph'}
 _TAB_KEYS = (('tab_positions', 'qt_tab_positions'), ('tab_orders', 'qt_tab_orders'),
              ('tab_log', 'qt_tab_log'))
@@ -189,7 +195,8 @@ class QuantWorker(QObject, ClientHolderMixin):
 
     state = Signal(object)        # snapshot：綁定行／待執行行／watching／auto／今日筆數／持倉方向數／風控
     event = Signal(object)        # {'level','key','args','detail','ts'} — key 屬 i18n，語言由頁決定
-    trade_data = Signal(object)   # {'kind':'accounts'|'positions'|'orders','rows','error','detail'}
+    trade_data = Signal(object)   # {'kind':'accounts'|'positions'|'orders','rows','error','detail',
+                                  #  'broker'（accounts 先有：邊家券商提供 → 顯示名先可以生成）}
 
     def __init__(self, loop, client_factory=None):
         super().__init__()
@@ -675,13 +682,20 @@ class QuantWorker(QObject, ClientHolderMixin):
 
     # ── 券商帳戶真相（持倉／訂單／帳戶）──
     async def _refresh_accounts(self):
+        """帳戶清單要連同「邊家券商提供」一併回報：顯示名由 `accounts.display_name` 生成，
+        而生成名要知道來源券商。名字直接問 `trade_supported`（它已 resolve 出實際 client，
+        `broker=None` 時跟 config.source.trade）→ 唔好喺 GUI 再推一次，兩處會漂移。"""
+        broker = self._broker or None
+        name = ''
         try:
             client = await self.ensure_client()
-            ok, rows, message = await client.trade_accounts()
+            ok, rows, message = await client.trade_accounts(broker=broker)
+            _, name, _ = client.trade_supported(broker)
         except Exception as e:
             logging.exception('quant: trade_accounts 失敗')
             ok, rows, message = False, None, f'{type(e).__name__}: {e}'
         self.trade_data.emit({'kind': 'accounts', 'rows': rows or [], 'error': '',
+                              'broker': name,
                               'detail': str(message or '') if not ok else ''})
 
     async def _refresh_positions(self):
@@ -772,6 +786,8 @@ class QuantPage(QWidget):
         self._search_fn = None
         self._state = None             # 最近一次 worker snapshot
         self._watch_shown = (False, 0)  # 狀態行只喺 (監控中?, 綁定數) 變嗰陣先改（唔食 input guard）
+        self._acc_rows_last = None      # 最近一次帳戶 payload（換語言先可重填顯示名）；None = 仲未取過，
+                                        # 唔好喺未問過券商之前聲稱「無帳戶」
 
         self._restore_state()
         self._setup_inputs()
@@ -1195,7 +1211,7 @@ class QuantPage(QWidget):
         rows = payload.get('rows') or []
         detail = str(payload.get('detail') or '')
         if kind == 'accounts':
-            self._fill_accounts(rows)
+            self._fill_accounts(rows, payload.get('broker'))
             if detail:
                 self._set_status(detail)   # 券商嘅原文（例如「呢家券商唔支援交易」）→ 如實轉達
             return
@@ -1212,16 +1228,28 @@ class QuantPage(QWidget):
         if detail:
             self._set_status(detail)
 
-    def _fill_accounts(self, rows):
+    def _fill_accounts(self, rows, broker=''):
+        """記低最近一次帳戶 payload → 再重填下拉。
+
+        快取係必須嘅：項目文字係生成嘅顯示名（設了別名即用別名），換語言時要由新語言
+        重新生成，唔可以改舊 itemText（`accounts.display_name` 的立場，同 `favorites.py` 一致）。
+        `broker` = worker resolve 出嘅券商名；生成名要知道來源券商，缺了就用下拉當前選擇
+        （兩處都冇就先當無，唔好憑空猜一家）。
+        """
+        self._acc_rows_last = (list(rows or []), str(broker or ''))
+        self._refill_account_combo()
+
+    def _refill_account_combo(self):
+        if self._acc_rows_last is None:
+            return   # 仲未取過帳戶 → 下拉留空（未問過券商就講「無帳戶」係說謊）
+        rows, broker = self._acc_rows_last
+        rows = acc.normalise_rows(rows, broker or str(self.qnt_broker.currentData() or '').lower())
+        aliases = acc.load_aliases()
         keep = self.qnt_account.currentData() or self._account
         self.qnt_account.blockSignals(True)
         self.qnt_account.clear()
-        for r in rows:
-            acc = str(r.get('acc_id') or '')
-            if not acc:
-                continue
-            self.qnt_account.addItem(' '.join(x for x in (acc, str(r.get('trd_env') or ''),
-                                                         str(r.get('acc_status') or '')) if x), acc)
+        for r in rows:   # itemText = 顯示名；userData 仍係 acc_id（worker 契約不變）
+            self.qnt_account.addItem(acc.display_name(r, self._lang, aliases), r['acc_id'])
         if self.qnt_account.count() == 0:   # 冇帳戶都要如實講冇，唔留返空下拉令人以為仲揀緊
             self.qnt_account.addItem(t('qt_acc_none', self._lang), '')
         i = self.qnt_account.findData(keep)
@@ -1263,6 +1291,7 @@ class QuantPage(QWidget):
                              len(self._state.get('rows') or []))
             self._sync_pending_hint(len(self._state.get('pending') or []))
         self._rebuild_strategy_combo()
+        self._refill_account_combo()   # 項目文字含生成嘅顯示名 → 一定要由新語言重生成
         for model in (self.bind_model, self.pending_model, self.pos_model, self.order_model):
             model.headerDataChanged.emit(Qt.Horizontal, 0, model.columnCount() - 1)
 
@@ -1288,7 +1317,6 @@ class QuantPage(QWidget):
 _PAGE_QSS = """
 QWidget#quant_page { background: ${window}; }
 QLabel[og="qtlbl"] { color: ${muted}; }
-QLabel[og="qtnote"] { color: ${muted}; }
 QLabel[og="qtstatus"] { color: ${text}; font-weight: 600; }
 QLabel[og="qtval"] { color: ${text}; font-weight: 600; }
 QLineEdit, QComboBox, QSpinBox {

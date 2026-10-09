@@ -16,6 +16,15 @@
    <property name="rightMargin"><number>0</number></property>
    <property name="bottomMargin"><number>0</number></property>
    <property name="spacing"><number>0</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → kline_page.py _TEXT）。
+        pageLayout margin/spacing = 0（嵌入圖要貼邊）→ 說明的留白用 QLabel.margin 自己補 -->
+   <item>
+    <widget class="QLabel" name="kline_page_note">
+     <property name="margin"><number>8</number></property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 嵌入嘅 gui_kline central widget（零改動 gui_kline.py：佢個 layout 喺佢自己 code 砌）
         → kline_page.py takeCentralWidget() 後 addWidget 進 embeddedSlot -->
    <item>

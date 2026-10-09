@@ -65,9 +65,10 @@ DEFAULT_CELLS = [{'symbol': 'HK.00700', 'period': 'K_1M'}] + [{'symbol': '', 'pe
 
 # `.ui` 內嘅靜態 widget：QSS property（Designer 帶唔住 dynamic property）+ 文字來源（見 gateway/ui/bind.py）
 _STAMP = {'quotes_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
-          'ind_toggle': {'og': 'indtoggle'}, 'ind_menu_btn': {'og': 'indmenu'}}
+          'ind_toggle': {'og': 'indtoggle'}, 'ind_menu_btn': {'og': 'indmenu'},
+          'quotes_page_note': {'role': 'pagebody'}}
 _TEXT = {'ind_toggle': 'quotes_ind_show', 'ind_menu_btn': 'quotes_ind_menu',
-         'strat_label': 'quotes_strategy_label'}
+         'strat_label': 'quotes_strategy_label', 'quotes_page_note': 'quotes_page_note'}
 _STAMP_CELL = {'quotes_cell': {}}   # 每格 root 都係純 QWidget → 同上（QSS QWidget#quotes_cell）
 
 

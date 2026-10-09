@@ -44,6 +44,7 @@ from PySide6.QtCore import QMargins, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QTableView  # noqa: E402
 import pandas as pd  # noqa: E402
 
+import gateway.accounts as acc  # noqa: E402 — 帳戶顯示名與別名屬共用模組（三頁同一份規則）
 import gateway.position_model as pm  # noqa: E402
 import gateway.quant_exec as qe  # noqa: E402
 import gateway.strategies as st  # noqa: E402
@@ -51,6 +52,18 @@ from gateway.i18n import t  # noqa: E402
 from gateway.pages import quant_page as bp  # noqa: E402
 from gateway.ui.loader import UI_DIR  # noqa: E402
 from modules import trade_base as tb  # noqa: E402
+
+
+def expect_name(lang, acc_id, env_key='trade_env_sim', broker='fake', alias=''):
+    """帳戶顯示名的期望值：由 i18n 重組一次。
+
+    斷言不呼叫被測的 `accounts.display_name`，否則檢查會變成同義反復（生成規則寫錯也照樣綠）。
+    `broker='fake'` = FakeTradeClient.trade_supported 回傳的券商 key；未知券商的標籤即券商名本身
+    （`accounts.broker_label` 的回落行為），因此不需要 i18n key。
+    """
+    label = alias or t('ta_label_fmt', lang).format(broker=broker, env=t(env_key, lang))
+    return t('ta_name_fmt', lang).format(label=label, acc_id=acc_id)
+
 
 FAILURES = []
 TOTAL = []
@@ -142,10 +155,12 @@ class FakeTradeClient:
         self.exited += 1
 
     # ⚠️ 真 `BrokerClient.trade_supported()` 係 SYNC（能力旗標唔使打網絡）
+    # 第二個回傳值 = 實際提供服務的券商 key（真實現在 registry 一律小寫）。帳戶顯示名要用呢個值
+    # 生成 acc_key，所以 fake 必須跟同一個大小寫，否則測試驗證的 key 形狀同真實環境唔同。
     def trade_supported(self, broker=None):
         if self.supported:
-            return True, 'FAKE', ''
-        return False, 'FAKE', '呢家券商唔支援交易：FAKE'
+            return True, 'fake', ''
+        return False, 'fake', '呢家券商唔支援交易：FAKE'
 
     async def stream_kline(self, *, code, ktype, broker=None, kline_num=None):
         self.stream_calls.append({'code': code, 'ktype': ktype, 'broker': broker})
@@ -300,7 +315,9 @@ NEEDED = ('qnt_broker_lbl', 'qnt_broker', 'qnt_env_lbl', 'qnt_env', 'qnt_account
           'qnt_clear_pending', 'qnt_confirm_hint', 'qnt_pending_table', 'qnt_tabs',
           'tab_positions', 'qnt_refresh_pos', 'qnt_pos_note', 'qnt_pos_table',
           'tab_orders', 'qnt_refresh_orders', 'qnt_orders_note', 'qnt_order_table',
-          'tab_log', 'qnt_log_clear', 'qnt_event_log')
+          'tab_log', 'qnt_log_clear', 'qnt_event_log',
+          # ticket #35：頁級使用說明 + 分區備注（文案屬 i18n，控件屬 `.ui`）
+          'qnt_page_note', 'qnt_bind_note', 'qnt_pending_note', 'qnt_log_note')
 missing = [n for n in NEEDED if getattr(page, n, None) is None]
 check(f'全部 {len(NEEDED)} 個 objectName 都注入到 Python 屬性', not missing, str(missing))
 # ⚠️ 以 `.ui` 宣告為真相：`findChildren` 會混埋 Qt 自己嘅內部名（qt_scrollarea_viewport 等）
@@ -702,12 +719,26 @@ check('移除綁定 → 行消失、日誌講明、剩返 2 個（去重 key 含
 check('冇揀帳戶 → 刷新持倉如實擋喺前面（唔打網絡、唔扮空表）',
       (page.qnt_refresh_pos.click(), page.qnt_status.text() == t('qt_need_account'))[1]
       and 'positions' not in fake.refreshed)
+check('⚠️ 未取過帳戶前下拉留空（未問過券商就聲稱「無帳戶」係說謊）', page.qnt_account.count() == 0)
 page.qnt_acc_refresh.click()
-check('刷新帳戶 → 帳戶下拉由券商真相填（acc_id + 環境 + 狀態）',
+check('刷新帳戶 → 帳戶下拉由券商真相填（兩筆帳戶）',
       wait_for(app, lambda: page.qnt_account.count() >= 2, what='accounts'))
 idx = page.qnt_account.findData('7001')
-check('帳戶項 data = acc_id（落單先至帶啱帳戶）', idx >= 0
-      and '7001' in page.qnt_account.itemText(idx) and 'SIMULATE' in page.qnt_account.itemText(idx))
+check('帳戶項 data = acc_id（落單先至帶啱帳戶）', idx >= 0)
+# 項目文字 = accounts.display_name（與交易帳戶頁同一份生成規則）；acc_id 保留在括號內
+check('帳戶項文字 = 顯示名（券商+環境+帳戶ID，由 i18n 生成）',
+      page.qnt_account.itemText(idx) == expect_name(page._lang, '7001'))
+# 別名屬全域儲存：在交易帳戶頁設定 → 本頁下拉即取代生成名（「全域以別名選擇帳戶」的最低要求）
+acc.set_alias('fake:7001', '主帳戶')
+page._refill_account_combo()
+idx = page.qnt_account.findData('7001')
+check('全域別名生效：取代生成名、保留 acc_id',
+      page.qnt_account.itemText(idx) == expect_name(page._lang, '7001', alias='主帳戶'))
+acc.set_alias('fake:7001', '')   # 空值即刪除該筆 → 回落生成名
+page._refill_account_combo()
+idx = page.qnt_account.findData('7001')
+check('重設別名後回落生成名',
+      page.qnt_account.itemText(idx) == expect_name(page._lang, '7001'))
 page.qnt_account.setCurrentIndex(idx)
 page.qnt_account.activated.emit(idx)   # ⚠️ 程式化 setCurrentIndex 唔發 activated（Qt 只喺用戶揀時發）
 check('⚠️ 揀咗帳戶 → worker 一定要收（否則落單永遠 account=None = 錯錢）',
@@ -768,6 +799,10 @@ check('切 EN：卡片標題 / 表頭 / 模式 / 監控狀態 / 按鈕全部跟�
       and cell(page.bind_model, 0, 3) == t('mode_both', 'en')
       and cell(page.bind_model, 0, 4) == t('qt_st_stopped', 'en')
       and page.qnt_watch_btn.text() == t('qt_watch_start', 'en'))
+# 帳戶項文字屬生成文字 → 換語言必須由新語言重生成（改舊 itemText 會留低舊語言）
+check('切 EN：帳戶下拉的顯示名由新語言重新生成（選中帳戶不變）',
+      page.qnt_account.currentData() == '7001'
+      and page.qnt_account.itemText(page.qnt_account.findData('7001')) == expect_name('en', '7001'))
 page.retranslate('zh_cn')
 pump(app, 5)
 check('切 zh_cn：同一套 key、简体文案（冇第二份字串）',
@@ -778,6 +813,24 @@ page.retranslate('zh_hk')
 pump(app, 5)
 check('切返 zh_hk（預設）', page.qnt_bind_card.title() == t('qt_bind_card')
       and cell(page.bind_model, 0, 3) == t('mode_both'))
+
+# ── ticket #35：使用說明備注 = `.ui` 控件 + i18n 三語 + QSS role 契約（三者少一樣都係靜默失敗）──
+NOTES = {'qnt_page_note': ('qt_page_note', 'pagebody'),
+         'qnt_bind_note': ('qt_bind_note', 'usagehint'),
+         'qnt_pending_note': ('qt_pending_note', 'usagehint'),
+         'qnt_log_note': ('qt_log_note', 'usagehint'),
+         'qnt_risk_zero_hint': ('qt_risk_zero_hint', 'usagehint')}
+check(f'使用說明備注（{len(NOTES)} 條）三語齊全、無空白',
+      all(t(k, l).strip() for _, (k, _) in NOTES.items() for l in LANGS))
+check('備注已套用文案並帶 role（無 role → QSS 無聲失效，等於用戶睇唔到淡色提示）',
+      all(getattr(page, n).text() == t(k) and str(getattr(page, n).property('role')) == r
+          for n, (k, r) in NOTES.items()))
+page.retranslate('en')
+pump(app, 5)
+check('切 EN：使用說明照跟語言（唔係寫死母語）',
+      all(getattr(page, n).text() == t(k, 'en') for n, (k, _) in NOTES.items()))
+page.retranslate('zh_hk')
+pump(app, 5)
 
 src = Path(bp.__file__).read_text(encoding='utf-8')
 KEYS = {k for k in re.findall(r"'((?:qt|mode|bt|col)_[a-z0-9]+)'", src)}

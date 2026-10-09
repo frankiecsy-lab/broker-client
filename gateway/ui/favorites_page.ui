@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>8</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → favorites_page.py _TEXT）：新增流程、名稱點樣解析、刪除與記憶 -->
+   <item>
+    <widget class="QLabel" name="fav_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <item>
     <layout class="QHBoxLayout" name="topRow">
      <item>

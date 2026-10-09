@@ -65,8 +65,10 @@ _STAMP = {
     'home_grp_hk': {'role': 'grphead'}, 'home_grp_cn': {'role': 'grphead'},
     'home_grp_us': {'role': 'grphead'},
     'home_refresh_btn': {'og': 'homebtn'},
+    'home_page_note': {'role': 'pagebody'},
 }
 _TEXT = {'home_title': 'page_home_title', 'home_refresh_btn': 'home_refresh',
+         'home_page_note': 'home_page_note',
          **{v: v for v in GROUP_UI.values()}}   # 分區 header：objectName 即 i18n key
 _TIPS = {'home_grp_us': 'home_us_proxy_note'}   # 美股 ETF 代理 — 如實講
 

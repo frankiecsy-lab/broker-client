@@ -499,6 +499,36 @@ def main():
         app.processEvents()
     check('retranslate 三語冇 KeyError（t() fail-fast）', True)
     check('retranslate en → placeholder 跟語言', 'Symbol:' in page.cells[0].cell_symbol.placeholderText())
+
+    # ── 使用說明備注：文案屬 i18n、樣式屬 theme（role）。缺 role → QSS 無聲失效 ──
+    from gateway.i18n import t as _t   # noqa: E402
+
+    def _has_text(k, lang):
+        try:
+            return bool(_t(k, lang).strip())
+        except Exception:
+            return False
+
+    NOTES = {'quotes_page_note': ('quotes_page_note', 'pagebody')}
+    check('使用說明備注三語齊全、無空白',
+          all(_has_text(k, lang) for _w, (k, _r) in NOTES.items()
+              for lang in ('zh_hk', 'zh_cn', 'en')))
+    page.retranslate('zh_hk')
+    app.processEvents()
+    check('備注已套用文案並帶 role（無 role → 淡色提示睇唔到）',
+          all(getattr(page, w).text() == _t(k, 'zh_hk')
+              and getattr(page, w).property('role') == r
+              for w, (k, r) in NOTES.items()))
+    page.retranslate('en')
+    app.processEvents()
+    check('切 EN：使用說明照跟語言（唔係寫死母語）',
+          all(getattr(page, w).text() == _t(k, 'en') for w, (k, _r) in NOTES.items()))
+    page.retranslate('zh_cn')
+    app.processEvents()
+    check('切 zh_cn：使用說明轉简体',
+          all(getattr(page, w).text() == _t(k, 'zh_cn') for w, (k, _r) in NOTES.items()))
+    page.retranslate('zh_hk')
+    app.processEvents()
     page._on_app_quit()
     check('清理 → request_shutdown + fake __aexit__', wait_for(app, lambda: fake.exited == 1, what='fake exit'))
 

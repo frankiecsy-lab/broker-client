@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>8</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明：先講流程，用戶唔使逐個控件估點用。文案屬 i18n → quant_page.py _TEXT -->
+   <item>
+    <widget class="QLabel" name="qnt_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 輸入行 1：交易邊界（券商／環境／帳戶／落單模式）。
         選項內容（券商名單、SIMULATE/REAL、帳戶清單）屬資料 → quant_page.py 按
         modules.registry.BROKERS + modules.trade_base.TRADE_ENVS + trade_accounts 填。
@@ -193,6 +205,13 @@
         <property name="rightMargin"><number>6</number></property>
         <property name="bottomMargin"><number>4</number></property>
         <property name="spacing"><number>4</number></property>
+        <!-- 即時三道閘（訊號基準線 / 未收盤 K 線 / 去重）屬規則，唔係控件提示 → 一次講清 -->
+        <item>
+         <widget class="QLabel" name="qnt_bind_note">
+          <property name="wordWrap"><bool>true</bool></property>
+          <property name="text"><string/></property>
+         </widget>
+        </item>
         <item>
          <widget class="QTableView" name="qnt_bind_table"/>
         </item>
@@ -316,6 +335,13 @@
         </item>
        </layout>
       </item>
+      <!-- 半自動的完整流程（排隊 → 確認才落單 → 狀態已變則作廢）屬規則 → 寫一次喺度 -->
+      <item>
+       <widget class="QLabel" name="qnt_pending_note">
+        <property name="wordWrap"><bool>true</bool></property>
+        <property name="text"><string/></property>
+       </widget>
+      </item>
       <item>
        <widget class="QTableView" name="qnt_pending_table"/>
       </item>
@@ -411,6 +437,12 @@
           </widget>
          </item>
         </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="qnt_log_note">
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="text"><string/></property>
+        </widget>
        </item>
        <item>
         <widget class="QPlainTextEdit" name="qnt_event_log">

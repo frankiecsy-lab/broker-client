@@ -34,6 +34,11 @@ LIGHT = {
 
 THEMES = {'dark': DARK, 'light': LIGHT}
 DEFAULT_THEME = 'dark'
+
+# ── 語義色：與 theme 無關（兩個 theme 通用），因此不入 palette，只此一份定義 ──
+# C_REAL 必須與漲跌紅同源（`pages/gui_kline.C_UP`），由 e2e_gui_accounts 斷言守住「全app 只有一種紅」。
+C_REAL = '#F23645'
+C_SIM = '#2C7BE5'      # palette 沒有藍色 token；C_DOWN 是青綠，不是藍
 CURRENT = DEFAULT_THEME   # 當前已套用 theme name — 嵌入頁（kline_page / fulltest_page）經 add_listener 跟隨
 
 # ── listener registry：PySide6 冇綁定 QApplication.styleSheetChanged，改由本 module 統一通知 ──
@@ -92,13 +97,26 @@ QLabel#standalone_title { color: $text; font-size: 15px; font-weight: bold; }
 /* placeholder 頁卡片（ticket #02）— 之後嵌入真頁面時呢段保留做 fallback */
 QWidget[og="pagecard"] { background-color: $card; border: 1px solid $border; border-radius: 10px; }
 QWidget[og="pagecard"] QLabel[role="pagetitle"] { color: $text; font-size: 22px; font-weight: bold; }
-QWidget[og="pagecard"] QLabel[role="pagebody"] { color: $muted; font-size: 14px; }
+/* 使用說明備注（pagebody / usagehint）見 _NOTE_QSS —— 全站唯一定義 */
 """)
+
+# 使用說明備注樣式：全站唯一定義，各頁不得再自行宣告淡色小字樣式。
+# ⚠️ Qt 層疊：widget 有頁級 stylesheet 時，近處規則勝過 app 級 → 設了頁級 QSS 嘅頁
+#    （K 線 / 全測試 / 連接 / 交易頁）必須自行 append note_qss()，否則 role 規則無聲失效。
+_NOTE_QSS = """\
+QLabel[role="pagebody"] { color: $muted; font-size: 14px; }
+QLabel[role="usagehint"] { color: $muted; font-size: 11px; }
+"""
+
+
+def note_qss(name=DEFAULT_THEME):
+    """備注樣式片段，俾設了頁面級 QSS 嘅頁 append（嗰啲頁食唔到 app 級規則）。"""
+    return Template(_NOTE_QSS).substitute(THEMES[name])
 
 
 def qss(name=DEFAULT_THEME):
     """生成指定 theme 嘅完整 QSS 字串。"""
-    return _QSS_TPL.substitute(THEMES[name])
+    return _QSS_TPL.substitute(THEMES[name]) + note_qss(name)
 
 
 def apply_theme(name=DEFAULT_THEME):

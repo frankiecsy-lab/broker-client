@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>8</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → symbol_list_page.py _TEXT）：篩選／搜尋語義、逐級查看、更新數據 -->
+   <item>
+    <widget class="QLabel" name="sl_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 頂欄：模糊搜尋 + 一鍵更新。placeholder／掣文字屬語言 → 由 symbol_list_page.py retranslate 填 -->
    <item>
     <layout class="QHBoxLayout" name="searchRow">

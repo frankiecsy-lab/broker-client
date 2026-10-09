@@ -475,17 +475,45 @@ class IBClient(BrokerBase, TradeBase):
             return v
         return int(f) if f == int(f) else f
 
+    # IB 的帳戶列表 API（`managedAccounts()`）只回傳 id，沒有類型欄位。
+    # `reqAccountSummaryAsync()`（此版本 ib_async 不帶參數，固定 tag 清單已包含 AccountType）
+    # 是取得 acc_type 唯一真實路徑 → best-effort：無權限／無回應一律留空。
+    _ACCOUNT_TYPE_TIMEOUT = 5.0
+
+    async def _account_types(self, ib):
+        """→ {account: AccountType}；任何失敗 → {}（不得因此令整個 trade_accounts 失敗）。
+
+        ⚠️ 必須用 `asyncio.wait_for`：權限不足時 TWS 只回 Error 321，ib_async 的 future
+        不會 resolve —— 無超時就會永久卡住整個帳戶頁。
+        """
+        try:
+            await asyncio.wait_for(ib.reqAccountSummaryAsync(), self._ACCOUNT_TYPE_TIMEOUT)
+        except Exception as e:
+            logger.info('IB 交易: AccountType 不可得（best-effort，留空）: %s', e)
+            return {}
+        try:
+            return {str(v.account): str(v.value) for v in ib.accountSummary()
+                    if v.tag == 'AccountType' and v.value}
+        except Exception as e:
+            logger.info('IB 交易: accountSummary 讀取失敗: %s', e)
+            return {}
+
     async def trade_accounts(self):
         ib, err = await self._trd_conn()
         if err:
             return False, None, err
-        accts = list(getattr(ib, 'managedAccounts', None) or [])
+        # ⚠️ `managedAccounts` 係 **method**（ib_async 2.1.0 ib.py:497）— 直接 list() 會
+        #    TypeError。契約測試從前俾假 list 掩住咗呢個真 bug（#36b）。
+        accts = list(ib.managedAccounts() or [])
         if not accts:
             return False, None, 'TWS 冇回報 managed account（連線權限不足？）'
+        types = await self._account_types(ib)
         rows = [{c: {'acc_id': a,
                      'trd_env': 'SIMULATE' if str(a).upper().startswith('DU') else 'REAL',
-                     'acc_status': 'ACTIVE'}.get(c, '') for c in ACC_COLS}
-                for a in accts]   # 未提供嘅欄（acc_type/trdmarket_auth）留空 — 由契約決定形狀，唔扮齊
+                     # 'ACTIVE' = 推論（TWS 只回連線可交易嘅 managed account），唔係 API 欄位
+                     'acc_status': 'ACTIVE',
+                     'acc_type': types.get(str(a), '')}.get(c, '') for c in ACC_COLS}
+                for a in accts]   # 未提供嘅欄（trdmarket_auth）留空 — 由契約決定形狀，唔扮齊
         return True, rows, ''
 
     async def place_order(self, *, code, side, qty, price=None, account=None,
@@ -598,12 +626,17 @@ class IBClient(BrokerBase, TradeBase):
             vals = ib.accountValues(acct)
         except Exception as e:
             return False, None, str(e)
-        by_tag = {}
+        by_tag, by_ccy = {}, {}
         for v in vals:
             if v.tag and v.value not in (None, ''):
                 by_tag[v.tag] = v.value   # 最後一次為準（IB 會推多行更新）
+                if v.currency:
+                    by_ccy[v.tag] = str(v.currency)
         info = {k: self._num(by_tag.get(tag, '')) for k, tag in self._ACCINFO_TAGS.items()}
-        missing = [k for k, v in info.items() if v == '']   # 如實：少欄要睇到，唔扮齊
+        # 每個 tag 的 currency 一直在手，從前被丟棄 → 帶回：IB 從不告訴呼叫端資金幣種，
+        # 而不同帳戶可以不同。以 NetLiquidation（總資產）那筆為準，退回任何一筆已知幣種。
+        info['currency'] = by_ccy.get('NetLiquidation') or next(iter(by_ccy.values()), '')
+        missing = [k for k in self._ACCINFO_TAGS if info.get(k) == '']   # 如實：缺少欄位要看得見
         if missing:
             logger.warning('IB 交易: accountValues 缺少欄位 %s', missing)
         return True, info, ''

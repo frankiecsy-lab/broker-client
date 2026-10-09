@@ -48,9 +48,11 @@ _STAMP = {
     'ind_remove_btn': {'og': 'indbtn'}, 'ind_detail_toggle': {'og': 'indbtn'},
     'ind_detail_desc': {'og': 'inddesc'}, 'ind_detail_usage': {'og': 'indusage'},
     'ind_detail_head': {'og': 'indhead'},
+    'ind_page_note': {'role': 'pagebody'}, 'ind_table_note': {'role': 'usagehint'},
 }
 _TEXT = {'ind_add_btn': 'ind_add', 'ind_save_btn': 'ind_save', 'ind_remove_btn': 'ind_remove',
-         'ind_detail_head': 'ind_detail_params'}
+         'ind_detail_head': 'ind_detail_params',
+         'ind_page_note': 'ind_page_note', 'ind_table_note': 'ind_table_note'}
 # 詳情掣嘅文字跟「展開定收起」→ 唔入 _TEXT，retranslate 入面單獨處理
 # （ind_detail_desc / _usage 混咗所選類型嘅資料 → 照留喺 _rebuild_detail）
 
@@ -246,7 +248,7 @@ class IndicatorsPage(QWidget):
         for p in d.params:
             lbl = QLabel()   # E2E hook
             lbl.setObjectName('ind_detail_note_%s' % p.key)
-            lbl.setProperty('og', 'indnote')
+            lbl.setProperty('role', 'usagehint')
             lbl.setWordWrap(True)
             lbl.setText('· %s：%s' % (t(p.label_key, lang), t(p.note_key, lang)))
             self.detailNoteSlot.addWidget(lbl)
@@ -384,7 +386,6 @@ QHeaderView::section { background-color: $card; color: $muted; border: 1px solid
 QWidget#ind_detail_panel { background-color: $card; border: 1px solid $border; border-radius: 4px; }
 QLabel[og="inddesc"], QLabel[og="indusage"] { color: $text; font-size: 12px; }
 QLabel[og="indhead"] { color: $muted; font-size: 12px; font-weight: bold; }
-QLabel[og="indnote"] { color: $muted; font-size: 11px; }
 QLabel#ind_counts, QLabel#ind_status { color: $muted; font-size: 11px; }
 """
 

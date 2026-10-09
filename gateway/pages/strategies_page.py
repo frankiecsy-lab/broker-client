@@ -56,6 +56,7 @@ _STAMP = {
     'str_buy_add_btn': {'og': 'strbtn'}, 'str_sell_add_btn': {'og': 'strbtn'},
     'str_add_btn': {'og': 'strbtn'}, 'str_save_btn': {'og': 'strbtn'},
     'str_remove_btn': {'og': 'strbtn'}, 'str_clear_btn': {'og': 'strbtn'},
+    'str_page_note': {'role': 'pagebody'}, 'str_score_note': {'role': 'usagehint'},
 }
 _TEXT = {'str_name_lbl': 'str_name_lbl', 'str_buffer_lbl': 'str_buffer_lbl',
          'str_price_lbl': 'str_price_lbl', 'str_qty_lbl': 'str_qty_lbl',
@@ -64,7 +65,8 @@ _TEXT = {'str_name_lbl': 'str_name_lbl', 'str_buffer_lbl': 'str_buffer_lbl',
          # 兩邊 GroupBox 嘅固定文案（objectName 已喺 `.ui` 固定 → 唔使喺 code 逐邊 set）
          'str_buy_group': 'str_buy_title', 'str_sell_group': 'str_sell_title',
          'str_buy_scorelbl': 'str_score_lbl', 'str_sell_scorelbl': 'str_score_lbl',
-         'str_buy_add_btn': 'str_add_rule', 'str_sell_add_btn': 'str_add_rule'}
+         'str_buy_add_btn': 'str_add_rule', 'str_sell_add_btn': 'str_add_rule',
+         'str_page_note': 'str_page_note', 'str_score_note': 'str_score_note'}
 _PH = {'str_name_edit': 'str_name_ph'}   # placeholder 唔屬 setText → 单独一行 loop
 # `strategy_rule_row.ui` 嘅模板名（每條 draft 一份，load 後先改做 str_<side>_rule_{i}）
 _ROW_STAMP = {'rule_lbl': {'og': 'strrule'}, 'rule_del_btn': {'og': 'strrule'}}

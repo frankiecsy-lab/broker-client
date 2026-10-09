@@ -351,6 +351,33 @@ theme_mod.apply_theme('dark')
 pump()
 check('theme 切換 → 頁面 QSS 帶 indtoggle 規則跟 palette + chart 正常 redraw',
       qss_ok and len(chart2.canvas.figure.axes) == 3)
+
+# ── 使用說明備注：呢頁嘅頁級 QSS 由 gui_kline 源碼重建（內含裸 `QLabel {}` 規則）
+#    → role 樣式必須喺真頁面上實測生效，唔可以靠推斷 ──
+from gateway.i18n import t as _t   # noqa: E402
+from PySide6.QtGui import QPalette  # noqa: E402
+page.retranslate('zh_hk')
+pump()
+check('K線頁使用說明三語齊全、無空白',
+      all(_t('kline_page_note', lang).strip() for lang in ('zh_hk', 'zh_cn', 'en')))
+check('K線頁使用說明已套用文案並帶 role=pagebody',
+      page.kline_page_note.text() == _t('kline_page_note', 'zh_hk')
+      and page.kline_page_note.property('role') == 'pagebody')
+page.kline_page_note.ensurePolished()
+got_muted = page.kline_page_note.palette().color(QPalette.WindowText).name().upper()
+want_muted = theme_mod.THEMES[theme_mod.CURRENT]['muted'].upper()
+check(f'頁級 QSS 有裸 QLabel 規則之下，role=pagebody 仍解析為淡色 {want_muted}（層疊實測，實測 {got_muted}）',
+      got_muted == want_muted)
+page.retranslate('en')
+pump()
+en_note = page.kline_page_note.text()
+page.retranslate('zh_cn')
+pump()
+cn_note = page.kline_page_note.text()
+check('切 EN / zh_cn：使用說明照跟語言（唔係寫死母語）',
+      en_note == _t('kline_page_note', 'en') and cn_note == _t('kline_page_note', 'zh_cn'))
+page.retranslate('zh_hk')
+pump()
 page._on_app_quit()
 pump()
 
@@ -426,6 +453,25 @@ ipage.retranslate('en')
 pump()
 check('管理頁 retranslate EN', 'Add indicator' in ipage.ind_add_btn.text()
       and ipage.model.headerData(1, Qt.Horizontal) == 'Indicator')
+
+# ── 使用說明備注：文案屬 i18n、樣式屬 theme（role）。缺 role → QSS 無聲失效，用戶睇唔到 ──
+IND_NOTES = {'ind_page_note': ('ind_page_note', 'pagebody'),
+             'ind_table_note': ('ind_table_note', 'usagehint')}
+check(f'指標頁使用說明（{len(IND_NOTES)} 條）三語齊全、無空白',
+      all(_t(k, lang).strip() for _w, (k, _r) in IND_NOTES.items()
+          for lang in ('zh_hk', 'zh_cn', 'en')))
+check('指標頁備注已套用文案並帶 role（無 role → 淡色提示睇唔到）',
+      all(getattr(ipage, w).text() == _t(k, 'en')
+          and getattr(ipage, w).property('role') == r
+          for w, (k, r) in IND_NOTES.items()))
+ipage.retranslate('zh_cn')
+pump()
+check('切 zh_cn：使用說明轉简体',
+      all(getattr(ipage, w).text() == _t(k, 'zh_cn') for w, (k, _r) in IND_NOTES.items()))
+ipage.retranslate('zh_hk')
+pump()
+check('切 zh_hk：使用說明跟返繁體',
+      all(getattr(ipage, w).text() == _t(k, 'zh_hk') for w, (k, _r) in IND_NOTES.items()))
 
 # ══ Part 8：shell 註冊 ════════════════════════════════════════════════════
 print('── Part 8: shell 註冊 ──')

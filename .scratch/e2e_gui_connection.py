@@ -220,6 +220,12 @@ def main():
                   and page.host_lbl_a.text() == t('conn_host', lang))
             check(f'i18n {lang}：form 值唔變',
                   page.futu_host.text() == '127.0.0.1' and page.ib_port.text() == '4001')
+            check(f'i18n {lang}：頁級使用說明跟隨語言',
+                  page.body_lbl.text() == t('page_connection_body', lang))
+        check('使用說明備注帶 role（缺少 role 時淡色提示不可見）且三語非空',
+              page.body_lbl.property('role') == 'pagebody'
+              and all(t('page_connection_body', l).strip()
+                      for l in ('zh_hk', 'zh_cn', 'en')))
 
         # ── 8. theme 跟隨外殼 ──
         cp.theme_mod.apply_theme('light')

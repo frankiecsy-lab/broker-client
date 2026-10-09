@@ -28,13 +28,16 @@ if _ROOT not in sys.path:
 from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
+from gateway.i18n import DEFAULT_LANG  # noqa: E402 — 頁級使用說明文案屬 i18n
 from gateway.pages import gui_fulltest as gf  # noqa: E402 — 同目錄 app 組件（本檔對佢零改動）
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
-from gateway.ui.bind import stamp  # noqa: E402
+from gateway.ui.bind import apply_text, stamp  # noqa: E402
 from gateway.ui.loader import apply_ui  # noqa: E402
 
 # `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住；見 gateway/ui/bind.py）
-_STAMP = {'fulltest_page': {}}   # bare QWidget 要 WA_StyledBackground 先食到頁面級背景 QSS
+_STAMP = {'fulltest_page': {},   # bare QWidget 要 WA_StyledBackground 先食到頁面級背景 QSS
+          'ft_page_note': {'role': 'pagebody'}}
+_TEXT = {'ft_page_note': 'ft_page_note'}   # 頁級使用說明（嵌入嘅 gui_fulltest 冇語言概念 → 只有呢一句跟語言）
 
 # ── 結果狀態色：light = gui_fulltest 原值（淺底設計），dark = 提亮變體（深底可讀）──
 _STATE_COLORS = {
@@ -83,8 +86,10 @@ class FulltestPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        apply_ui(self, 'fulltest_page')     # 排版喺 .ui（零 margin + 一個 embedSlot）
+        apply_ui(self, 'fulltest_page')     # 排版喺 .ui（零 margin + 頁級使用說明 + embedSlot）
         stamp(self, _STAMP)
+        self._lang = DEFAULT_LANG
+        apply_text(self, _TEXT, self._lang)   # 頁級使用說明（嵌入內容嘅文案 bake 喺 gui_fulltest 自己 code）
 
         # ── 嵌入 gui_fulltest.MainWindow（隱藏 top-level；保留引用 alive 俾 thread lifecycle）──
         self._win = gf.MainWindow()          # 唔 show — 只係 take 佢嘅 central widget
@@ -107,7 +112,9 @@ class FulltestPage(QWidget):
             r, g, b = _STATE_COLORS[name][state]
             gf.STATE_STYLE[state] = (label, QColor(r, g, b))
 
-        self.setStyleSheet(_QSS_TPL.substitute(pal))   # 頁面級 scope：cascade 入嵌入子 widget，唔會漏出頁面外
+        # 頁面級 scope：cascade 入嵌入子 widget，唔會漏出頁面外
+        # + note_qss()：呢度有裸 `QLabel { color: $text }`，Qt 層疊下會蓋走 app 級 role 規則
+        self.setStyleSheet(_QSS_TPL.substitute(pal) + theme_mod.note_qss(name))
 
     def _on_theme_changed(self, name: str):
         """外殼 / standalone window theme 切換（apply_theme listener）→ 嵌入頁跟住換。"""
@@ -125,7 +132,10 @@ class FulltestPage(QWidget):
 
     # ── i18n ──────────────────────────────────────────────────────
     def retranslate(self, lang: str):
-        """外殼 / standalone window 語言切換時調用 — gui_fulltest 冇自己嘅語言 combo，no-op。"""
+        """外殼 / standalone window 語言切換 — 嵌入嘅 gui_fulltest 冇語言概念（文案 bake 喺佢自己 code），
+        本頁只覆寫頁級使用說明。"""
+        self._lang = lang
+        apply_text(self, _TEXT, lang)
 
 
 if __name__ == '__main__':

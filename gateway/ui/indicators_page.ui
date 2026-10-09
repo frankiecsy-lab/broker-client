@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>8</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → indicators_page.py _TEXT）：新增／套用修改／說明的流程 -->
+   <item>
+    <widget class="QLabel" name="ind_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 頂欄：類型 / 位置 combo。兩邊嘅內容全部屬資料（類型 = INDICATOR_DEFS、位置 = 該類型准入
         positions），由 indicators_page.py 即時填 → 呢度只留控件同排版 -->
    <item>
@@ -102,6 +114,13 @@
        <layout class="QVBoxLayout" name="detailNoteSlot"/>
       </item>
      </layout>
+    </widget>
+   </item>
+   <!-- 列表區備注：呢頁最容易誤會嘅係「詳情跟邊個」→ 一句講清（文案屬 i18n） -->
+   <item>
+    <widget class="QLabel" name="ind_table_note">
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
     </widget>
    </item>
    <item>

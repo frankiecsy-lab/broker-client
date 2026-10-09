@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AccountsPage</class>
+ <!--
+   交易帳戶頁排版（Qt Designer 可開）。身份契約：objectName == 頁面內的 Python 屬性名
+   （QUiLoader 會將子 widget 掛為 root attribute），改名兩邊必須同步。
+   `og` / `role` 等自訂 dynamic property 由 accounts_page._STAMP 在載入後注入（Designer 帶不住）。
+   欄位比例使用 sizePolicy 的 horstretch/verstretch（= Designer「Layout Stretch」），
+   因為 `.ui` 的 <item> 不帶 stretch 屬性；root 級剩餘高度要歸某區，就包一個 wrapper
+   widget 帶 verstretch。
+   Designer 改本檔時注意：QGridLayout 的間距屬性名必須是 horizontalSpacing/verticalSpacing
+   （寫 hspacing/vspacing 會被 uic 靜默丟掉，實測變回 6）；卡片與欄的 vsizetype 不可寫 Fixed
+   （Fixed 會把 item 最小高度抬到 sizeHint）。
+   「按券商數量加欄」由結構保證：每個券商一個 QGroupBox + 一個空 QGridLayout slot，
+   名稱必須是 ta_grid_<broker>（對應 modules/registry.py 的 BROKERS）。缺 slot 頁面會直接
+   RuntimeError，而不是靜默少一欄。
+   卡片數量、卡片內容、被屏蔽帳戶的計數全部屬資料 → 由 accounts_page.py 建立，本檔不需修改。
+ -->
+ <widget class="QWidget" name="accounts_page">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1280</width><height>820</height></rect>
+  </property>
+  <layout class="QVBoxLayout" name="pageLayout">
+   <property name="leftMargin"><number>24</number></property>
+   <property name="topMargin"><number>20</number></property>
+   <property name="rightMargin"><number>24</number></property>
+   <property name="bottomMargin"><number>20</number></property>
+   <property name="spacing"><number>6</number></property>
+
+   <!-- ── Header card（[og="pagecard"] + [role="pagetitle"] 屬 app 級樣式）
+        verstretch=0：不佔剩餘高度；vsizetype 必須 Preferred，不可 Fixed ── -->
+   <item>
+    <widget class="QWidget" name="ta_header_card">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <layout class="QHBoxLayout" name="headerLayout">
+      <property name="leftMargin"><number>32</number></property>
+      <property name="topMargin"><number>20</number></property>
+      <property name="rightMargin"><number>32</number></property>
+      <property name="bottomMargin"><number>20</number></property>
+      <property name="spacing"><number>16</number></property>
+      <item>
+       <layout class="QVBoxLayout" name="headTextCol">
+        <property name="spacing"><number>4</number></property>
+        <item>
+         <widget class="QLabel" name="ta_title_lbl">
+          <property name="text"><string>交易帳戶</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="ta_updated_lbl">
+          <property name="text"><string>尚未取得帳戶資料</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="ta_auto_lbl">
+          <property name="text"><string>資金每 10 秒自動刷新</string></property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPushButton" name="ta_refresh_btn">
+        <property name="text"><string>立即刷新</string></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── 頁級使用說明（role=pagebody）與取捨說明（role=usagehint）── -->
+   <item>
+    <widget class="QLabel" name="accounts_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="ta_usage">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
+
+   <!-- ── 每券商一欄（horstretch 相同 = 等寬）。欄永不隱藏：無結果/失敗時在
+        ta_col_<broker>_err 如實說明，避免「所有帳戶」靜默不完整 ── -->
+   <item>
+    <widget class="QWidget" name="ta_area_wrap">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+     <layout class="QHBoxLayout" name="areaWrapLayout">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <item>
+       <widget class="QScrollArea" name="ta_area">
+        <property name="widgetResizable"><bool>true</bool></property>
+        <widget class="QWidget" name="ta_host">
+         <property name="geometry">
+          <rect><x>0</x><y>0</y><width>1230</width><height>600</height></rect>
+         </property>
+         <layout class="QHBoxLayout" name="ta_cols">
+          <property name="leftMargin"><number>0</number></property>
+          <property name="topMargin"><number>0</number></property>
+          <property name="rightMargin"><number>0</number></property>
+          <property name="bottomMargin"><number>0</number></property>
+          <property name="spacing"><number>12</number></property>
+
+          <item>
+           <widget class="QGroupBox" name="ta_col_futu">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+              <horstretch>1</horstretch><verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="title"><string>富途 帳戶</string></property>
+            <layout class="QVBoxLayout" name="ta_col_futu_col">
+             <property name="leftMargin"><number>8</number></property>
+             <property name="topMargin"><number>8</number></property>
+             <property name="rightMargin"><number>8</number></property>
+             <property name="bottomMargin"><number>8</number></property>
+             <property name="spacing"><number>6</number></property>
+             <item>
+              <widget class="QLabel" name="ta_col_futu_err">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                 <horstretch>0</horstretch><verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="wordWrap"><bool>true</bool></property>
+               <property name="text"><string/></property>
+              </widget>
+             </item>
+             <!-- 卡片由 accounts_page._sync_cards 按 acc_key 差異增刪（資金刷新不重建卡片） -->
+             <item>
+              <layout class="QGridLayout" name="ta_grid_futu">
+               <property name="horizontalSpacing"><number>10</number></property>
+               <property name="verticalSpacing"><number>10</number></property>
+              </layout>
+             </item>
+             <item>
+              <spacer name="ta_col_futu_gap">
+               <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+               <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+               <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+              </spacer>
+             </item>
+            </layout>
+           </widget>
+          </item>
+
+          <item>
+           <widget class="QGroupBox" name="ta_col_ib">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+              <horstretch>1</horstretch><verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="title"><string>IB 帳戶</string></property>
+            <layout class="QVBoxLayout" name="ta_col_ib_col">
+             <property name="leftMargin"><number>8</number></property>
+             <property name="topMargin"><number>8</number></property>
+             <property name="rightMargin"><number>8</number></property>
+             <property name="bottomMargin"><number>8</number></property>
+             <property name="spacing"><number>6</number></property>
+             <item>
+              <widget class="QLabel" name="ta_col_ib_err">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                 <horstretch>0</horstretch><verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="wordWrap"><bool>true</bool></property>
+               <property name="text"><string/></property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QGridLayout" name="ta_grid_ib">
+               <property name="horizontalSpacing"><number>10</number></property>
+               <property name="verticalSpacing"><number>10</number></property>
+              </layout>
+             </item>
+             <item>
+              <spacer name="ta_col_ib_gap">
+               <property name="orientation"><enum>Qt::Orientation::Vertical</enum></property>
+               <property name="sizeType"><enum>QSizePolicy::Policy::Expanding</enum></property>
+               <property name="sizeHint" stdset="0"><size><width>0</width><height>0</height></size></property>
+              </spacer>
+             </item>
+            </layout>
+           </widget>
+          </item>
+
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

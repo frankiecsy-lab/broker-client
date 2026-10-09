@@ -14,7 +14,7 @@ Flow:
 5. FILTER：市場 × 種類 exclusive；UNKNOWN 只喺 ALL 出現
 6. 刪除所選（多選）
 7. 本地記憶：新 page 實例還原 items + filter；JSON 檔結構如實
-8. i18n 三語（按鈕/欄頭/狀態跟語言）
+8. i18n 三語（按鈕/欄頭/狀態/頁級使用說明跟語言）
 
 Exit code 0 = all pass; non-zero = at least one check failed.
 """
@@ -229,8 +229,8 @@ def main():
           codes_of(page) == ['US.TEST99'] and '已刪除' in page.fav_status.text())
     page.fav_remove_btn.click()
     pump(app)
-    check('冇選中 → ⚠️ fav_no_sel', '没有选中' in page.fav_status.text()
-          or '冇選中' in page.fav_status.text())
+    check('no selection -> fav_no_sel', '未選擇任何行' in page.fav_status.text()
+          or '未选择任何行' in page.fav_status.text())
 
     # ── 7. 本地記憶 + JSON 結構 ──
     print('── Part 7: 記憶 / JSON ──')
@@ -273,6 +273,36 @@ def main():
     pump(app)
     check('zh_cn：简体按鈕 + 股票 label',
           page3.fav_add_btn.text() == '＋ 新增收藏' and page3._type_label('STOCK') == '股票')
+
+    # ── 使用說明備注：文案屬 i18n、樣式屬 theme（role）；缺少 role 時 QSS 無聲失效 ──
+    from gateway.i18n import t as _t   # noqa: E402
+
+    def _has_text(k, lang):
+        try:
+            return bool(_t(k, lang).strip())
+        except Exception:
+            return False
+
+    NOTES = {'fav_page_note': ('fav_page_note', 'pagebody')}
+    check('使用說明備注：三語齊全且無空白',
+          all(_has_text(k, lang) for _w, (k, _r) in NOTES.items()
+              for lang in ('zh_hk', 'zh_cn', 'en')))
+    page3.retranslate('zh_hk')
+    pump(app)
+    check('備注已套用文案並帶 role（缺少 role 時淡色提示不可見）',
+          all(getattr(page3, w).text() == _t(k, 'zh_hk')
+              and getattr(page3, w).property('role') == r
+              for w, (k, r) in NOTES.items()))
+    page3.retranslate('en')
+    pump(app)
+    check('切換 EN：使用說明跟隨語言',
+          all(getattr(page3, w).text() == _t(k, 'en') for w, (k, _r) in NOTES.items()))
+    page3.retranslate('zh_cn')
+    pump(app)
+    check('切換 zh_cn：使用說明轉為簡體',
+          all(getattr(page3, w).text() == _t(k, 'zh_cn') for w, (k, _r) in NOTES.items()))
+    page3.retranslate('zh_hk')
+    pump(app)
 
     # ── 9. canonical 大細階（🤖 live 抓出：store 唔准 upper — 期貨主連 HK.HSImain 要保留）──
     print('── Part 9: canonical 大細階 ──')

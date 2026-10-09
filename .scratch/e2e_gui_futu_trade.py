@@ -53,9 +53,21 @@ from PySide6.QtWidgets import QApplication, QGridLayout, QMessageBox, QSizePolic
 import pandas as pd  # noqa: E402
 
 import gateway.pages.futu_trade_page as ftp_mod  # noqa: E402
+import gateway.accounts as acc  # noqa: E402 — 顯示名與別名屬共用模組，斷言需直接經其儲存入口設定
 import modules.symbol_search as ss  # noqa: E402 — FakeSearchDir 用佢嘅 _T2S（同真 index 同一正規化）
 from futu import RET_OK  # noqa: E402
 from gateway.app import NAV_DIRECT, OneGateWindow  # noqa: E402
+from gateway.i18n import t as _t  # noqa: E402
+
+
+def expect_name(lang, acc_id, broker_key='name_broker_futu', env_key='trade_env_sim', alias=''):
+    """帳戶顯示名的期望值：由 i18n 重組一次。
+
+    斷言不呼叫被測的 `accounts.display_name`，否則檢查會變成同義反復（生成規則寫錯也照樣綠）。
+    """
+    label = alias or _t('ta_label_fmt', lang).format(
+        broker=_t(broker_key, lang), env=_t(env_key, lang))
+    return _t('ta_name_fmt', lang).format(label=label, acc_id=acc_id)
 
 
 class FakeCtx:
@@ -345,11 +357,32 @@ def main():
           and page.code_lbl.property('role') == 'formlabel'
           and page.buy_btn.property('og') == 'buybtn' and page.env_sim_btn.property('og') == 'envbtn')
     check('頁面 QSS 有根（objectName → QSS cascade）', 'QWidget#futu_trade_page' in page.styleSheet())
-    check('表格欄數 / 高度上限：欄數由 code（ACC/ORDER/POS_COLS），位置同 maxH 由 `.ui`',
+    # 頁級使用說明：文案屬 i18n、樣式屬 theme（role）；缺少 role 時 QSS 無聲失效
+    check('使用說明備注：三語齊全且無空白',
+          all(_t('page_futu_trade_body', lang).strip()
+              for lang in ('zh_hk', 'zh_cn', 'en')))
+    check('備注已套用文案並帶 role（缺少 role 時淡色提示不可見）',
+          page.body_lbl.text() == _t('page_futu_trade_body', 'zh_hk')
+          and page.body_lbl.property('role') == 'pagebody')
+    page.retranslate('en')
+    check('切換 EN：使用說明跟隨語言', page.body_lbl.text() == _t('page_futu_trade_body', 'en'))
+    page.retranslate('zh_cn')
+    check('切換 zh_cn：使用說明轉為簡體', page.body_lbl.text() == _t('page_futu_trade_body', 'zh_cn'))
+    page.retranslate('zh_hk')
+    dcol = ftp_mod.ACC_TABLE_COLS.index('display_name')
+    check('表格欄數 / 高度上限：欄數由 code（ACC_TABLE_COLS/ORDER_COLS/POS_COLS），位置同 maxH 由 `.ui`',
           page.acc_table.maximumHeight() == 160
-          and page.acc_table.columnCount() == len(ftp_mod.ACC_COLS)
+          and page.acc_table.columnCount() == len(ftp_mod.ACC_TABLE_COLS)
           and page.orders_table.columnCount() == len(ftp_mod.ORDER_COLS)
           and page.pos_table.columnCount() == len(ftp_mod.POS_COLS))
+    # 顯示名欄由 accounts 模組生成（與交易帳戶頁同一份規則）→ 欄名必須跟語言
+    check('帳戶表末欄為顯示名欄，欄名三語',
+          dcol == len(ftp_mod.ACC_COLS)
+          and page.acc_table.horizontalHeaderItem(dcol).text() == _t('col_display_name', 'zh_hk'))
+    page.retranslate('en')
+    check('顯示名欄名跟隨語言',
+          page.acc_table.horizontalHeaderItem(dcol).text() == _t('col_display_name', 'en'))
+    page.retranslate('zh_hk')
     check('combo item / 環境 exclusive toggle 由 code 填（加選項唔使改 `.ui`）',
           page.market_combo.count() == len(ftp_mod.MARKET_FILTERS)
           and page.otype_combo.count() == len(ftp_mod.ORDER_TYPES)
@@ -368,6 +401,26 @@ def main():
     check('SIM env default → 1 row (ACTIVE filter)', page.acc_table.rowCount() == 1)
     check('row is SIMULATE+ACTIVE',
           all(r['trd_env'] == 'SIMULATE' and r['acc_status'] == 'ACTIVE' for r in page._acc_rows))
+
+    # ── 顯示名（#36e：與交易帳戶頁共用 accounts.display_name）──
+    sim_name = expect_name('zh_hk', '10000001')
+    check('帳戶表顯示名欄 = 生成名（券商+環境+帳戶ID）',
+          page.acc_table.item(0, dcol).text() == sim_name)
+    check('顯示名保留 acc_id（設了別名也不隱藏帳號）', '10000001' in sim_name)
+    check('原始行不含顯示名（生成文字只存在於顯示行，真相仍是券商資料）',
+          all('display_name' not in r for r in page._accounts_all))
+    page.retranslate('en')
+    check('語言切換後顯示名由新語言重新生成（不是改舊 cell）',
+          page.acc_table.item(0, dcol).text() == expect_name('en', '10000001'))
+    page.retranslate('zh_hk')
+    # 別名屬全域儲存：在交易帳戶頁設定，本頁顯示 —— 這是「全域以別名選擇帳戶」的最低要求
+    acc.set_alias('futu:10000001', '主帳戶')
+    page._apply_account_filter()
+    check('全域別名生效：取代生成名、保留 acc_id',
+          page.acc_table.item(0, dcol).text() == expect_name('zh_hk', '10000001', alias='主帳戶'))
+    acc.set_alias('futu:10000001', '')   # 空值即刪除該筆 → 回落生成名
+    page._apply_account_filter()
+    check('重設別名後回落生成名', page.acc_table.item(0, dcol).text() == sim_name)
 
     # env toggle → REAL: only ACTIVE REAL shown (DISABLED filtered out), data follows along
     page.env_real_btn.click()
@@ -429,7 +482,17 @@ def main():
     page.env_real_btn.click()
     wait_for(app, lambda: page._acc is not None and str(page._acc.get('trd_env')) == 'REAL',
              what='real auto select (2nd)')
-    check('REAL account label uses accent color warning', 'color:' in page.acc_sel_lbl.styleSheet())
+    # 環境語義色 = QSS property（與交易帳戶頁卡片同一機制）。offscreen 無法解析真實顏色 →
+    # 斷言 property 與頁級 selector 都在（同 t_usage_hint_style.py 的做法）
+    check('選中 REAL 帳戶 → acc_sel_lbl 帶 env=REAL property',
+          page.acc_sel_lbl.property('env') == 'REAL')
+    check('頁級 QSS 有 [env=REAL]/[env=SIMULATE] 規則，色值取自 theme.C_REAL/C_SIM（全站一種紅）',
+          '[role="result"][env="REAL"]' in page.styleSheet()
+          and '[role="result"][env="SIMULATE"]' in page.styleSheet()
+          and ftp_mod.theme_mod.C_REAL in page.styleSheet()
+          and ftp_mod.theme_mod.C_SIM in page.styleSheet())
+    check('選中帳戶的標籤以顯示名呈現（不是裸 acc_id）',
+          expect_name('zh_hk', '20000001', env_key='trade_env_real') in page.acc_sel_lbl.text())
     # 用 isHidden()（唔係 isVisible()）— 頁面未必係 stacked layout 當前頁，parent hidden 會令 isVisible 永遠 False
     check('unlock status visible in REAL env', not page.unlock_status_lbl.isHidden())
     # 揀 REAL 帳戶 → 即時 unlock_probe（modify_order fake id，無副作用）→ 狀態自動更新，唔使等落單

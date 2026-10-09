@@ -46,6 +46,19 @@ def stamp(root, registry):
     return missing
 
 
+def set_prop(w, name, value):
+    """運行期改 QSS property（值未變即返回）→ unpolish/polish 後才會套用新值。
+
+    `stamp` 只在 `.ui` 載入後跑一次；會變的狀態（帳戶環境、數值是否過期）必須經此處改，
+    否則 property selector 永遠停在初始值。
+    """
+    if w.property(name) == value:
+        return
+    w.setProperty(name, value)
+    w.style().unpolish(w)
+    w.style().polish(w)
+
+
 def apply_text(root, table, lang):
     """table-driven retranslate：`{objectName: i18n_key}` → `setText`。取代各頁手寫 retranslate body。
     QGroupBox 嘅標題冇 `setText`，一律用 `setTitle`（等 GroupBox 標題都入到同一張表）。"""

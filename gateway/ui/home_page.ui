@@ -42,6 +42,18 @@
      </item>
     </layout>
    </item>
+   <!-- 頁級使用說明（文案屬 i18n → home_page.py _TEXT）：三區內容、美股 ETF 代理、刷新節奏 -->
+   <item>
+    <widget class="QLabel" name="home_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <item>
     <widget class="QLabel" name="home_status">
      <property name="text"><string/></property>

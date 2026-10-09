@@ -247,6 +247,28 @@ check("whole gui_fulltest UI lives under the page (QSS cascade has a root)",
       page.findChild(QPushButton, 'run_all') is not None
       and len(page.findChildren(QTableWidget)) >= 1)
 check("page-level theme QSS applied", 'QWidget#fulltest_page' in page.styleSheet())
+
+# ── 頁級使用說明：文案屬 i18n、樣式屬 theme（role）。
+#    頁級 QSS 含裸 `QLabel { color: $text }` → 必須 append note_qss()，否則層疊下蓋走淡色提示 ──
+from gateway.i18n import t as _t
+
+NOTES = {'ft_page_note': ('ft_page_note', 'pagebody')}
+check("note_qss fragment appended to page QSS (bare QLabel rule would win otherwise)",
+      all(f'QLabel[role="{r}"]' in page.styleSheet() for r in ('pagebody', 'usagehint')))
+check("usage note has non-blank text in all three languages",
+      all(_t(k, lang).strip() for _w, (k, _r) in NOTES.items()
+          for lang in ('zh_hk', 'zh_cn', 'en')))
+for lang in ('zh_hk', 'en', 'zh_cn'):
+    page.retranslate(lang)
+    pump(0.2)
+    check(f"retranslate {lang}: usage note follows the language",
+          all(getattr(page, w).text() == _t(k, lang) for w, (k, _r) in NOTES.items()))
+page.retranslate('zh_hk')
+pump(0.2)
+check("note text applied and carries role (no role -> invisible muted hint)",
+      all(getattr(page, w).text() == _t(k, 'zh_hk')
+          and getattr(page, w).property('role') == r for w, (k, r) in NOTES.items()))
+
 page._on_app_quit()   # aboutToQuit path -> original closeEvent cleanup chain
 end = time.monotonic() + 5
 while time.monotonic() < end and page._win.thread.isRunning():

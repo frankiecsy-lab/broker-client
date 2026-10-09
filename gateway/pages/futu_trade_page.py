@@ -60,11 +60,16 @@ from PySide6.QtWidgets import (  # noqa: E402
 import gateway.theme as theme_mod  # noqa: E402 — module 引用（唔係 from-import，避免 stale value binding）
 from gateway.i18n import DEFAULT_LANG, t  # noqa: E402
 from gateway.symbol_input import FuzzyCompleter, apply_item, display_name  # noqa: E402 — 全域模糊輸入
-from gateway.ui.bind import apply_text, stamp  # noqa: E402
+from gateway import accounts as acc  # noqa: E402 — 帳戶規則與顯示名單一來源（三頁共用）
+from gateway.ui.bind import apply_text, set_prop, stamp  # noqa: E402
 from gateway.ui.loader import apply_ui  # noqa: E402
 from modules.trade_base import (  # noqa: E402 — 欄位形狀一來源（#34b，兩家券商、兩頁共用）
-    ACC_COLS, ACCINFO_KEYS, NUMERIC_COLS, ORDER_COLS, POS_COLS,
+    ACC_COLS, ACCINFO_KEYS, NUMERIC_COLS, ORDER_COLS, POS_COLS, clamp_env,
 )
+
+# 帳戶表欄 = 契約欄 + 一欄衍生顯示名（#36d：全域以別名/生成名識別帳戶）。
+# 顯示名屬「生成文字」→ 每次由 i18n 即時解析，永不入檔；換語言要重填（見 retranslate）。
+ACC_TABLE_COLS = ACC_COLS + ('display_name',)
 
 # config.json 路徑 — pathlib 跨平台（AGENTS.md：禁 hardcode 斜線）
 CONFIG_PATH = Path(__file__).resolve().parents[2] / 'modules' / 'config.json'
@@ -214,7 +219,11 @@ class _FutuTradeWorker(QThread):
             return {'ok': False, 'error': str(accs)}
         self._ctx = ctx
         self._last_hostport = (kw['host'], int(kw['port']))   # stock_search lazy 建 qctx 用
-        rows = [{c: r[c] for c in ACC_COLS if c in r} for r in accs.to_dict(orient='records')]
+        # 只取契約欄（`card_num` 等敏感欄一律唔好帶返 GUI），再標記來源券商 →
+        # 顯示名先可以由 `accounts.display_name` 正確生成（佢要 `broker` 先識邊間券商）
+        rows = acc.normalise_rows(
+            [{c: r[c] for c in ACC_COLS if c in r} for r in accs.to_dict(orient='records')],
+            'futu')
         return {'ok': True, 'connect_ms': ms, 'accounts': rows}
 
     def _op_disconnect(self, kw):
@@ -470,6 +479,10 @@ QWidget#futu_trade_page { background-color: $window; }
 QLabel[role="sectitle"] { color: $text; font-size: 16px; font-weight: bold; }
 QLabel[role="formlabel"] { color: $muted; font-size: 13px; }
 QLabel[role="result"] { color: $text; font-size: 13px; }
+/* 選中帳戶嘅環境 = 全站同一組語義色（實盤紅 / 模擬藍，見 gateway/theme.py C_REAL/C_SIM）
+   → 同交易帳戶頁嘅卡片同一口徑；property 由 `bind.set_prop` 喺選中時改，唔再 inline setStyleSheet */
+QLabel[role="result"][env="REAL"] { color: $real; font-weight: bold; }
+QLabel[role="result"][env="SIMULATE"] { color: $sim; }
 
 QLineEdit {
     background-color: $surface; color: $text;
@@ -597,8 +610,8 @@ class FutuTradePage(QWidget):
         apply_ui(self, 'futu_trade_page')
         stamp(self, _STAMP)   # 注入 og/role + WA_StyledBackground（頁面 root 同各 card 一併補返）
 
-        # 表格欄數 = 資料（ACC_COLS / ORDER_COLS / POS_COLS）；位置同 acc_table 高度上限喺 .ui
-        for tb, cols in ((self.acc_table, ACC_COLS), (self.orders_table, ORDER_COLS),
+        # 表格欄數 = 資料（ACC_TABLE_COLS / ORDER_COLS / POS_COLS）；位置同 acc_table 高度上限喺 .ui
+        for tb, cols in ((self.acc_table, ACC_TABLE_COLS), (self.orders_table, ORDER_COLS),
                          (self.pos_table, POS_COLS)):
             self._config_table(tb, cols)
 
@@ -756,15 +769,21 @@ class FutuTradePage(QWidget):
         self._worker.submit('connect', host=host, port=int(port_text))
 
     def _apply_account_filter(self):
-        """client-side 帳戶過濾 — ACTIVE only + 環境切換（SIM/REAL）+ 市場 combo；切換唔使重連。"""
+        """client-side 帳戶過濾 — ACTIVE only + 環境切換（SIM/REAL）+ 市場 combo；切換唔使重連。
+
+        ACTIVE 規則取自 `accounts.active_only`（與交易帳戶頁共用同一份，唔再各寫一個 if）。
+        每行補一欄顯示名（設了別名即用別名）：呢欄屬生成文字，只存在於顯示行 `self._acc_rows`，
+        唔入 `_accounts_all`（原始行先係真相），換語言由 `retranslate` 重填。
+        """
         env = 'SIMULATE' if self.env_sim_btn.isChecked() else 'REAL'
         m = self.market_combo.currentText()
-        rows = [a for a in self._accounts_all
-                if str(a.get('acc_status')) == 'ACTIVE'
-                and str(a.get('trd_env')) == env
-                and (m == 'All' or m in str(a.get('trdmarket_auth', '')))]
+        active, _n = acc.active_only(self._accounts_all)
+        aliases = acc.load_aliases()
+        rows = [dict(a, display_name=acc.display_name(a, self._lang, aliases)) for a in active
+                if str(a.get('trd_env')) == env
+                and (m == 'All' or m in acc.markets_text(a))]
         self._acc_rows = rows
-        self._fill_table(self.acc_table, ACC_COLS, rows)
+        self._fill_table(self.acc_table, ACC_TABLE_COLS, rows)
 
     def _on_account_filter_changed(self):
         """環境切換 / 市場過濾 → 重新 filter 帳戶表；選定帳戶唔喺新列表就自動選首行，
@@ -791,7 +810,7 @@ class FutuTradePage(QWidget):
     def _clear_data_views(self, msg):
         """冇可選帳戶（環境/市場過濾後為空）→ 清空數據區 + 顯示提示。"""
         self._acc = None
-        self.acc_sel_lbl.setStyleSheet('')
+        set_prop(self.acc_sel_lbl, 'env', '')
         self.acc_sel_lbl.setText(msg)
         self.orders_table.setRowCount(0)
         self.pos_table.setRowCount(0)
@@ -799,24 +818,34 @@ class FutuTradePage(QWidget):
         self.orders_status_lbl.setText(msg)
         self.accinfo_lbl.setText(msg)
 
+    def _refill_accounts(self):
+        """語言切換後重填帳戶表 — 顯示名屬生成文字，要由新語言重新生成（唔可以改舊 cell）。
+        選中行按 `acc_id` 找回（唔靠 index：換語言前後嘅行序理論上可變）。"""
+        cur = self._acc.get('acc_id') if self._acc else None
+        self._apply_account_filter()
+        if cur is None:
+            return
+        for i, a in enumerate(self._acc_rows):
+            if a.get('acc_id') == cur:
+                self.acc_table.selectRow(i)
+                self._acc = a   # selectRow 對已選行唔會發 signal → 自己指向新行（先至唔會留低舊語言嘅 dict）
+                break
+
     def _on_acc_selected(self):
         r = self.acc_table.currentRow()
         if 0 <= r < len(self._acc_rows):
             self._acc = self._acc_rows[r]
+            # 顯示名即時解析（別名 → 生成名回落），唔讀 cell：cell 可能係上一種語言生成
             text = t('trade_acc_selected', self._lang).format(
-                acc_id=_fmt(self._acc.get('acc_id')), env=self._acc.get('trd_env', '?'),
-                type=self._acc.get('acc_type', '?'))
-            # REAL 帳戶用 accent 色提醒（SIMULATE 保持普通 result 色）
-            if str(self._acc.get('trd_env')) == 'REAL':
-                pal = theme_mod.THEMES[theme_mod.CURRENT]
-                self.acc_sel_lbl.setStyleSheet(f"color: {pal['accent']}; font-size: 13px;")
-            else:
-                self.acc_sel_lbl.setStyleSheet('')
+                name=acc.display_name(self._acc, self._lang, acc.load_aliases()),
+                env=self._acc.get('trd_env', '?'), type=self._acc.get('acc_type', '?'))
+            # 環境語義色（實盤紅 / 模擬藍）= QSS property，同交易帳戶頁同一機制
+            set_prop(self.acc_sel_lbl, 'env', clamp_env(self._acc.get('trd_env')))
             self.acc_sel_lbl.setText(text)
             self._probe_unlock_now()   # 選定 REAL 帳戶 → 即時探測解鎖狀態（唔使等落單）
         else:
             self._acc = None
-            self.acc_sel_lbl.setStyleSheet('')
+            set_prop(self.acc_sel_lbl, 'env', '')
             self.acc_sel_lbl.setText(t('trade_no_account', self._lang))
 
     # ── 下單 / 解鎖 ─────────────────────────────────────────────
@@ -1045,6 +1074,7 @@ class FutuTradePage(QWidget):
             self.acc_table.setRowCount(0)
             self.orders_table.setRowCount(0)
             self.pos_table.setRowCount(0)
+            set_prop(self.acc_sel_lbl, 'env', '')   # 唔好留低上一個帳戶嘅環境色
             self.acc_sel_lbl.setText(t('trade_no_account', self._lang))
             self.accinfo_lbl.setText('')
             self.orders_status_lbl.setText('')
@@ -1176,8 +1206,11 @@ class FutuTradePage(QWidget):
 
     # ── theme 傳播 / i18n / 退出清理 ────────────────────────────
     def _apply_embedded_theme(self, name: str):
-        """套用頁面級 QSS（palette 值由 THEMES[name] 注入）— cascade 入本頁子 widget。"""
-        pal = theme_mod.THEMES[name]
+        """套用頁面級 QSS（palette 值由 THEMES[name] 注入）— cascade 入本頁子 widget。
+
+        語義色唔屬 palette（兩個 theme 通用），由 theme 模組單一定義後一併代入。
+        """
+        pal = {**theme_mod.THEMES[name], 'real': theme_mod.C_REAL, 'sim': theme_mod.C_SIM}
         self.setStyleSheet(_QSS_TPL.substitute(pal))
 
     def _on_theme_changed(self, name: str):
@@ -1198,11 +1231,12 @@ class FutuTradePage(QWidget):
         self.tif_combo.setCurrentIndex(max(0, self.tif_combo.findData(cur_tif)))
         self.tif_combo.blockSignals(False)
         # 動態 label（acc_sel / status）跟住重譯一次；表格欄名即時換（數據唔使重填）；hint 跟語言
+        self._refill_accounts()          # 帳戶表含生成嘅顯示名 → 呢頁唯一要重填數據嘅表
         if self._acc:
             self._on_acc_selected()
         else:
             self.acc_sel_lbl.setText(t('trade_no_account', lang))
-        for tb, cols in ((self.acc_table, ACC_COLS), (self.orders_table, ORDER_COLS),
+        for tb, cols in ((self.acc_table, ACC_TABLE_COLS), (self.orders_table, ORDER_COLS),
                          (self.pos_table, POS_COLS)):
             self._apply_headers(tb, cols)
         self._update_code_hint()

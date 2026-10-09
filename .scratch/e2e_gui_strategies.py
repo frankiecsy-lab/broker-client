@@ -149,7 +149,7 @@ check('參數欄按 CONDITION_DEFS 生成並填進 paramSlot（加條件類型�
 check('頁面 QSS 有根（objectName → QSS cascade）', 'QWidget#strategies_page' in page.styleSheet())
 
 check('空表 → 空提示 status + counts 0', page.model.rowCount() == 0
-      and '暫時冇策略' in page.str_status.text())
+      and '暫無策略' in page.str_status.text())
 
 page.str_name_edit.setText('T1')
 check('objectName 齊：param spin / score / add_btn（E2E hook 契約）',
@@ -267,6 +267,36 @@ check('zh_cn 表頭简体', page.model.headerData(_CI['buy'], Qt.Horizontal) == 
 page.retranslate('zh_hk')
 pump()
 
+# ── 使用說明備注：文案屬 i18n、樣式屬 theme（role）。缺 role → QSS 無聲失效，用戶睇唔到 ──
+NOTES = {'str_page_note': ('str_page_note', 'pagebody'),
+         'str_score_note': ('str_score_note', 'usagehint')}
+
+
+def _has_text(k, lang):
+    try:
+        return bool(t(k, lang).strip())
+    except Exception:
+        return False
+
+
+check(f'使用說明備注（{len(NOTES)} 條）三語齊全、無空白',
+      all(_has_text(k, lang) for _w, (k, _r) in NOTES.items()
+          for lang in ('zh_hk', 'zh_cn', 'en')))
+check('備注已套用文案並帶 role（無 role → 淡色提示睇唔到）',
+      all(getattr(page, w).text() == t(k, 'zh_hk')
+          and getattr(page, w).property('role') == r
+          for w, (k, r) in NOTES.items()))
+page.retranslate('en')
+pump()
+check('切 EN：使用說明照跟語言（唔係寫死母語）',
+      all(getattr(page, w).text() == t(k, 'en') for w, (k, _r) in NOTES.items()))
+page.retranslate('zh_cn')
+pump()
+check('切 zh_cn：使用說明轉简体',
+      all(getattr(page, w).text() == t(k, 'zh_cn') for w, (k, _r) in NOTES.items()))
+page.retranslate('zh_hk')
+pump()
+
 import gateway.pages.strategies_page as sp_mod  # noqa: E402
 KEYS = (set(sp_mod.HEAD_KEYS.values())
         | set(sp_mod._TYPE_KEYS.values()) | set(sp_mod._SIDE_KEYS.values())
@@ -278,7 +308,8 @@ KEYS = (set(sp_mod.HEAD_KEYS.values())
            'str_bad_name', 'str_no_rules', 'str_dup_name',
            'str_added', 'str_updated', 'str_removed', 'str_gone', 'str_no_sel', 'str_sel_edit',
            'str_p_fast', 'str_p_slow', 'str_p_line',
-           'str_desc_ma_cross', 'str_desc_boll_cross', 'str_desc_vob_break'}
+           'str_desc_ma_cross', 'str_desc_boll_cross', 'str_desc_vob_break',
+           'str_page_note', 'str_score_note'}
         | {p.label_key for d in st.CONDITION_DEFS.values() for p in d.params})
 missing = []
 for k in sorted(KEYS):

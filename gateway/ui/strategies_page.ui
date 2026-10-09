@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>8</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → strategies_page.py _TEXT）：規則集語義 + 邊度會用到 -->
+   <item>
+    <widget class="QLabel" name="str_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 表先（多選 → 刪除；單行 → 載入編輯）；欄寬／欄頭行為屬資料 → strategies_page.py -->
    <item>
     <widget class="QTableView" name="str_table">
@@ -64,6 +76,13 @@
       </widget>
      </item>
     </layout>
+   </item>
+   <!-- 分數制係呢度最容易誤會嘅規則 → 先一句講清觸發條件（文案屬 i18n） -->
+   <item>
+    <widget class="QLabel" name="str_score_note">
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
    </item>
    <!-- 買／賣兩組條件編輯器（分數制）：combo／分數行屬排版；
         動態參數欄由 strategies_page.py 按 strategies.CONDITION_DEFS 填進 str_*_paramSlot，

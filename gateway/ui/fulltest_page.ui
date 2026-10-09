@@ -18,6 +18,27 @@
    <property name="rightMargin"><number>0</number></property>
    <property name="bottomMargin"><number>0</number></property>
    <property name="spacing"><number>0</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → fulltest_page.py _TEXT）：逐行運行／Run All／Stop／結果語義。
+        頁面本身 0 margin（嵌入內容自帶間距）→ 備注用內層 layout 帶 margin -->
+   <item>
+    <layout class="QVBoxLayout" name="noteRow">
+     <property name="leftMargin"><number>10</number></property>
+     <property name="topMargin"><number>8</number></property>
+     <property name="rightMargin"><number>10</number></property>
+     <property name="bottomMargin"><number>0</number></property>
+     <item>
+      <widget class="QLabel" name="ft_page_note">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+         <horstretch>0</horstretch><verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="wordWrap"><bool>true</bool></property>
+       <property name="text"><string/></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
    <item>
     <layout class="QVBoxLayout" name="embedSlot"/>
    </item>

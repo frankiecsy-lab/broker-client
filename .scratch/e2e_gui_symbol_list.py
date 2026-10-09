@@ -378,6 +378,36 @@ def main():
           page.model.headerData(3, Qt.Horizontal) == 'Call'
           and page._wtype_label('BULL') == 'Bull')
 
+    # ── 使用說明備注：文案屬 i18n、樣式屬 theme（role）；缺少 role 時 QSS 無聲失效 ──
+    from gateway.i18n import t as _t   # noqa: E402
+
+    def _has_text(k, lang):
+        try:
+            return bool(_t(k, lang).strip())
+        except Exception:
+            return False
+
+    NOTES = {'sl_page_note': ('sl_page_note', 'pagebody')}
+    check('使用說明備注：三語齊全且無空白',
+          all(_has_text(k, lang) for _w, (k, _r) in NOTES.items()
+              for lang in ('zh_hk', 'zh_cn', 'en')))
+    page.retranslate('zh_hk')
+    pump(app)
+    check('備注已套用文案並帶 role（缺少 role 時淡色提示不可見）',
+          all(getattr(page, w).text() == _t(k, 'zh_hk')
+              and getattr(page, w).property('role') == r
+              for w, (k, r) in NOTES.items()))
+    page.retranslate('en')
+    pump(app)
+    check('切換 EN：使用說明跟隨語言',
+          all(getattr(page, w).text() == _t(k, 'en') for w, (k, _r) in NOTES.items()))
+    page.retranslate('zh_cn')
+    pump(app)
+    check('切換 zh_cn：使用說明轉為簡體',
+          all(getattr(page, w).text() == _t(k, 'zh_cn') for w, (k, _r) in NOTES.items()))
+    page.retranslate('zh_hk')
+    pump(app)
+
     print()
     if FAILURES:
         print(f'❌ E2E FAILED — {len(FAILURES)} check(s): ' + '; '.join(FAILURES))

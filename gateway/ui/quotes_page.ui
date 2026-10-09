@@ -16,6 +16,18 @@
    <property name="rightMargin"><number>10</number></property>
    <property name="bottomMargin"><number>10</number></property>
    <property name="spacing"><number>6</number></property>
+   <!-- 頁級使用說明（文案屬 i18n → quotes_page.py _TEXT）：版面切換、串流、指標/策略開關 -->
+   <item>
+    <widget class="QLabel" name="quotes_page_note">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+       <horstretch>0</horstretch><verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+    </widget>
+   </item>
    <!-- 頂欄：左 = 指標總開關 + 指標選項 menu + 策略下拉｜右 = layout 按鈕 -->
    <item>
     <layout class="QHBoxLayout" name="topBar">

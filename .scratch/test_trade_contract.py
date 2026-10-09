@@ -266,8 +266,21 @@ print('\n[5] IBClient 交易能力', flush=True)
 
 
 class FakeIB:
+    """⚠️ `managedAccounts` 必須是 **method**：真 ib_async 2.1.0 就是 method（ib.py:497）。
+       從前這裡是假 list，掩住了 `list(<bound method>)` 的 TypeError（#36b 真 bug）。"""
+
     def __init__(self):
-        self.managedAccounts = ['DU12345', '5566778']
+        self._managed = ['DU12345', '5566778']
+        self.summary = [
+            SimpleNamespace(account='DU12345', tag='AccountType', value='PAPER',
+                            currency='', modelCode=''),
+            SimpleNamespace(account='5566778', tag='AccountType', value='INDIVIDUAL',
+                            currency='', modelCode=''),
+            SimpleNamespace(account='5566778', tag='NetLiquidation', value='1',
+                            currency='USD', modelCode='')]
+        self.summary_fail = ''        # 非空 → reqAccountSummaryAsync 擲（權限不足 / Error 321）
+        self.summary_hangs = False    # True → future 永不 resolve（Error 321 的真實形狀）
+        self.summary_calls = 0
         self.cancelled = []
         self.placed = []
         self.open = [SimpleNamespace(
@@ -281,6 +294,20 @@ class FakeIB:
 
     def isConnected(self):
         return True
+
+    def managedAccounts(self):
+        return list(self._managed)
+
+    async def reqAccountSummaryAsync(self):
+        self.summary_calls += 1
+        if self.summary_hangs:
+            await asyncio.Event().wait()      # 永不 resolve：無超時就會永久卡住
+        if self.summary_fail:
+            raise RuntimeError(self.summary_fail)
+        return None
+
+    def accountSummary(self, account=''):
+        return list(self.summary)
 
     def placeOrder(self, contract, order):
         self.placed.append((contract, order))
@@ -302,10 +329,12 @@ class FakeIB:
         return None
 
     def accountValues(self, acct):
-        return [SimpleNamespace(tag='NetLiquidation', value='123456.78'),
-                SimpleNamespace(tag='CashBalance', value='50000'),
-                SimpleNamespace(tag='', value='空 tag 唔收'),
-                SimpleNamespace(tag='BuyingPower', value='200000')]
+        # AccountValue 有 currency 欄（_fields: account/tag/value/currency/modelCode）→
+        # 假物件必須帶，否則測不到「幣種一直在手但從前被丟棄」這一段
+        return [SimpleNamespace(tag='NetLiquidation', value='123456.78', currency='USD'),
+                SimpleNamespace(tag='CashBalance', value='50000', currency='USD'),
+                SimpleNamespace(tag='', value='空 tag 唔收', currency='USD'),
+                SimpleNamespace(tag='BuyingPower', value='200000', currency='')]
 
 
 ic = IBClient({'host': '127.0.0.1', 'port': 4001})
@@ -331,6 +360,31 @@ check('trade_accounts → 只回 ACC_COLS', st is True and tuple(sorted(data[0])
 envs = {r['acc_id']: r['trd_env'] for r in data}
 check('DU 前綴 → SIMULATE、其餘 → REAL（編號慣例，如實推）',
       envs == {'DU12345': 'SIMULATE', '5566778': 'REAL'})
+check('假物件的 managedAccounts 是 method（真 bug：list(<bound method>) → TypeError）',
+      callable(getattr(fib, 'managedAccounts', None)))
+check('AccountType 帶回 acc_type（IB 帳戶列表 API 真沒有類型欄位）',
+      {r['acc_id']: r['acc_type'] for r in data} ==
+      {'DU12345': 'PAPER', '5566778': 'INDIVIDUAL'})
+check('非 AccountType 的 summary 行不混入 acc_type',
+      all(r['acc_type'] in ('PAPER', 'INDIVIDUAL') for r in data))
+
+fib.summary_fail = 'Unable to obtain contractual account summary (Error 321)'
+st, data, msg = run(ic.trade_accounts())
+check('AccountType 失敗 → 帳戶照常返回、acc_type 留空（不連帶失敗、不假裝齊全）',
+      st is True and len(data) == 2 and all(r['acc_type'] == '' for r in data) and msg == '')
+fib.summary_fail = ''
+fib.summary_hangs = True
+ic._ACCOUNT_TYPE_TIMEOUT = 0.05          # 真 5 秒會拖慢測試；要測的是「有超時、不卡死」
+st, data, msg = run(ic.trade_accounts())
+check('summary 永不 resolve（權限不足時的真實形狀）→ 超時後照常返回，不卡死整個呼叫',
+      st is True and all(r['acc_type'] == '' for r in data))
+fib.summary_hangs = False
+del ic._ACCOUNT_TYPE_TIMEOUT
+fib.accountSummary = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('summary 讀取失敗'))
+st, data, msg = run(ic.trade_accounts())
+check('accountSummary 讀取失敗 → 照樣留空（第二條 except 同樣 best-effort）',
+      st is True and len(data) == 2 and all(r['acc_type'] == '' for r in data))
+del fib.accountSummary
 
 st, data, msg = run(ic.place_order(code='HK.HSImain', side='short', qty=2, price=19000,
                                    account='5566778', order_type='NORMAL'))
@@ -366,11 +420,23 @@ check('IB reqPositions 真冇嘅欄留空（market_val/pl_val/pl_ratio/can_sell_
       and rows[0]['pl_ratio'] == '' and rows[0]['can_sell_qty'] == '')
 
 st, info, msg = run(ic.account_info(account='5566778'))
-check('account_info → ACCINFO_KEYS 全齊形（tag 映射）',
-      st is True and tuple(sorted(info)) == tuple(sorted(ACCINFO_KEYS)))
+check('account_info → ACCINFO_KEYS 全齊形（tag 映射）+ currency',
+      st is True and tuple(sorted(k for k in info if k != 'currency')) == tuple(sorted(ACCINFO_KEYS)))
 check('有值 → 數字；無值 → 留空（唔扮 0）',
       info['total_assets'] == 123456.78 and info['cash'] == 50000
       and info['market_val'] == '' and info['available_funds'] == '')
+check('currency 帶回，以 NetLiquidation 那筆為準（IB 從不告訴呼叫端資金幣種）',
+      info['currency'] == 'USD')
+_av = fib.accountValues
+fib.accountValues = lambda acct: [SimpleNamespace(tag='CashBalance', value='1', currency='HKD')]
+st, info, msg = run(ic.account_info(account='5566778'))
+check('無 NetLiquidation 幣種 → 退回任何一筆已知幣種；無值欄仍留空',
+      st is True and info['currency'] == 'HKD' and info['total_assets'] == '')
+fib.accountValues = lambda acct: [SimpleNamespace(tag='CashBalance', value='1', currency='')]
+st, info, msg = run(ic.account_info(account='5566778'))
+check('全部幣種為空 → currency 空字串（如實未知，不猜 USD）',
+      st is True and info['currency'] == '')
+fib.accountValues = _av
 
 st, info, msg = run(ic.unlock_status())
 check('IB 冇解鎖機制 → unlocked=True + known=True（唔阻全自動）',

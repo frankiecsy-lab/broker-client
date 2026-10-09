@@ -211,7 +211,8 @@ def main():
               ('bt_symbol', 'bt_strategy', 'bt_broker', 'bt_ktype', 'bt_bars', 'bt_run_btn',
                'bt_capital', 'bt_fee', 'bt_slip', 'bt_rf', 'bt_mode', 'bt_mode_lbl', 'bt_note',
                'bt_status', 'bt_tabs', 'bt_trade_table', 'bt_ig_table', 'bt_chart_hint',
-               'bt_cards_area', 'bt_cards_host')))
+               'bt_cards_area', 'bt_cards_host',
+               'bt_page_note', 'bt_trades_note', 'bt_ig_note')))
     check('四個 tab + 四個空 grid slot + 兩個表由 `.ui` 建出',
           page.bt_tabs.count() == 4
           and all(isinstance(getattr(page, f'bt_grid_{g}'), QGridLayout)
@@ -757,6 +758,30 @@ def main():
           and [page.bt_mode.itemText(i) for i in range(page.bt_mode.count())]
               == [t(f'mode_{m}', 'zh_cn') for m in pm.MODES]
           and page.bt_mode.currentData() == mode_sel)
+    page.retranslate('zh_hk')
+    pump(app)
+
+    # 使用說明備注：文案屬 i18n、樣式屬 theme（role）。缺 role → QSS 無聲失效，用戶睇唔到
+    NOTES = {'bt_page_note': ('bt_page_note', 'pagebody'),
+             'bt_note': ('bt_note_no_compound', 'usagehint'),
+             'bt_chart_hint': ('bt_chart_empty', 'usagehint'),   # 呢個 objectName 對應 `bt_chart_empty`
+             'bt_trades_note': ('bt_trades_note', 'usagehint'),
+             'bt_ig_note': ('bt_ig_note', 'usagehint')}
+    check(f'使用說明備注（{len(NOTES)} 條）三語齊全、無空白',
+          all(not _missing_key(k, lang) and t(k, lang).strip()
+              for _w, (k, _r) in NOTES.items() for lang in ('zh_hk', 'zh_cn', 'en')))
+    check('備注已套用文案並帶 role（無 role → QSS 無聲失效，淡色提示睇唔到）',
+          all(getattr(page, w).text() == t(k, 'zh_hk')
+              and getattr(page, w).property('role') == r
+              for w, (k, r) in NOTES.items()))
+    page.retranslate('en')
+    pump(app)
+    check('切 EN：使用說明照跟語言（唔係寫死母語）',
+          all(getattr(page, w).text() == t(k, 'en') for w, (k, _r) in NOTES.items()))
+    page.retranslate('zh_cn')
+    pump(app)
+    check('切 zh_cn：使用說明轉简体',
+          all(getattr(page, w).text() == t(k, 'zh_cn') for w, (k, _r) in NOTES.items()))
     page.retranslate('zh_hk')
     pump(app)
 

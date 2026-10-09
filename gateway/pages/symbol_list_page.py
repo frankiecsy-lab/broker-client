@@ -79,8 +79,10 @@ OTYPE_KEYS = {'CALL': 'sl_opt_call', 'PUT': 'sl_opt_put'}
 
 # `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
 _STAMP = {'symbol_list_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
-          'sl_update_btn': {'og': 'slbtn'}, 'sl_back_btn': {'og': 'slbtn'}}
-_TEXT = {'sl_update_btn': 'sl_update', 'sl_back_btn': 'sl_back'}
+          'sl_update_btn': {'og': 'slbtn'}, 'sl_back_btn': {'og': 'slbtn'},
+          'sl_page_note': {'role': 'pagebody'}}
+_TEXT = {'sl_update_btn': 'sl_update', 'sl_back_btn': 'sl_back',
+         'sl_page_note': 'sl_page_note'}
 _PH = {'sl_search': 'sl_search_ph'}   # placeholder 唔屬 setText → 单独一行 loop
 
 

@@ -106,6 +106,9 @@ _STAMP = {
     'bt_fee_lbl': {'og': 'btlbl'}, 'bt_slip_lbl': {'og': 'btlbl'}, 'bt_rf_lbl': {'og': 'btlbl'},
     'bt_mode_lbl': {'og': 'btlbl'},
     'bt_run_btn': {'og': 'btrun'},
+    'bt_note': {'role': 'usagehint'}, 'bt_chart_hint': {'role': 'usagehint'},
+    'bt_page_note': {'role': 'pagebody'},
+    'bt_trades_note': {'role': 'usagehint'}, 'bt_ig_note': {'role': 'usagehint'},
 }
 _TEXT = {'bt_symbol_lbl': 'bt_symbol_lbl', 'bt_strategy_lbl': 'bt_strategy_lbl',
          'bt_broker_lbl': 'bt_broker_lbl', 'bt_ktype_lbl': 'bt_ktype_lbl',
@@ -114,7 +117,9 @@ _TEXT = {'bt_symbol_lbl': 'bt_symbol_lbl', 'bt_strategy_lbl': 'bt_strategy_lbl',
          'bt_mode_lbl': 'mode_lbl',   # 同一個概念 → 同量化頁共用 `mode_lbl`（唔開第二份字串）
          'bt_run_btn': 'bt_run_btn', 'bt_note': 'bt_note_no_compound',
          'bt_grp_ret': 'bt_grp_ret', 'bt_grp_risk': 'bt_grp_risk',
-         'bt_grp_adj': 'bt_grp_adj', 'bt_grp_exec': 'bt_grp_exec'}
+         'bt_grp_adj': 'bt_grp_adj', 'bt_grp_exec': 'bt_grp_exec',
+         'bt_page_note': 'bt_page_note', 'bt_trades_note': 'bt_trades_note',
+         'bt_ig_note': 'bt_ig_note'}
 _PH = {'bt_symbol': 'bt_symbol_ph'}
 _TAB_KEYS = (('tab_metrics', 'bt_tab_metrics'), ('tab_trades', 'bt_tab_trades'),
              ('tab_ignored', 'bt_tab_ignored'), ('tab_chart', 'bt_tab_chart'))
@@ -859,7 +864,7 @@ QPushButton[og="btrun"] { color: #FFFFFF; background-color: $accent; border: 1px
     border-radius: 4px; padding: 5px 12px; font-size: 12px; font-weight: bold; }
 QPushButton[og="btrun"]:hover { background-color: $accent_pressed; }
 QPushButton[og="btrun"]:disabled { color: $muted; background: transparent; border-color: $border; }
-QLabel#bt_note, QLabel#bt_status, QLabel#bt_chart_hint { color: $muted; font-size: 11px; }
+QLabel#bt_status { color: $muted; font-size: 11px; }
 QTabWidget::pane { border: 1px solid $border; background-color: $surface; }
 QTabBar::tab { color: $muted; background: $card; border: 1px solid $border;
     padding: 5px 12px; font-size: 12px; }

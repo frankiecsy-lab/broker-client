@@ -64,8 +64,9 @@ QPushButton[og="indtoggle"]:checked { background: $accent; color: #FFFFFF; borde
 """)
 
 # `.ui` 入面嘅靜態 widget：QSS property（Designer 帶唔住）+ 文字來源（見 gateway/ui/bind.py）
-_STAMP = {'kline_page': {}}   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
-_TEXT = {'ind_bar_lbl': 'ind_show_label'}
+_STAMP = {'kline_page': {},   # 純 QWidget root → 補 WA_StyledBackground，頁面級 QSS 先食到
+          'kline_page_note': {'role': 'pagebody'}}
+_TEXT = {'ind_bar_lbl': 'ind_show_label', 'kline_page_note': 'kline_page_note'}
 
 
 def _rebuild_qss() -> str:
@@ -146,7 +147,8 @@ class KlinePage(QWidget):
         # C_UP/C_DOWN 係語義色（紅漲/綠跌 HK convention）— 跟 theme 不變
 
         # 頁面級 scope：cascade 入嵌入子 widget，唔會漏出頁面外；+ 指標掣列樣式（同用新 palette → 跟 theme）
-        self.setStyleSheet(_rebuild_qss() + _EXTRA_QSS_TPL.substitute(pal))
+        # + note_qss()：呢度有裸 QWidget/QLabel 規則（gui_kline QSS），app 級 role 規則會被蓋走
+        self.setStyleSheet(_rebuild_qss() + _EXTRA_QSS_TPL.substitute(pal) + theme_mod.note_qss(name))
 
         win = self._win
         # ── 建檔時 bake 咗嘅 stylesheet（f-string 喺 __init__ 求值，C_* 重新指派唔會自動更新 — 逐個 restyle）──
